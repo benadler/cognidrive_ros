@@ -1,0 +1,20 @@
+<package>
+  <description brief="cognidrive_ros">
+     cognidrive_ros tries to connect MetraLab's CogniDrive to ROS. This is a little tricky because CogniDrive uses its own middleware called MIRA (http://www.mira-project.org/). In effect, we translate between ROS-topics and MIRA-channels, ROS-actionlib and MIRA-Navigation-Tasks etc.
+  </description>
+  <author>SCITOS Demo user</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/cognidrive_ros</url>
+  <depend package="actionlib"/>
+  <depend package="roscpp"/>
+  <depend package="tf"/>
+  <depend package="roslib"/>
+  <depend package="std_msgs"/>
+  <depend package="pr2_msgs"/>
+  <depend package="geometry_msgs"/>
+  <depend package="actionlib_msgs"/>
+
+</package>
+
+
