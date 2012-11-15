@@ -9,7 +9,6 @@ include($ENV{ROS_ROOT}/core/rosbuild/rosbuild.cmake)
 #  MinSizeRel     : w/o debug symbols, w/ optimization, stripped binaries
 #set(ROS_BUILD_TYPE RelWithDebInfo)
 
-
 rosbuild_find_ros_package(actionlib_msgs)
 include(${actionlib_msgs_PACKAGE_PATH}/cmake/actionbuild.cmake)
 genaction()
@@ -17,12 +16,11 @@ genaction()
 rosbuild_init()
 rosbuild_add_boost_directories()
 
+# include cmake file for MIRA and make sure cmake can parse booleans that come
+# as strings, e.g. "true" and "false". This worked in previous versions of cmake.
 cmake_policy(PUSH)
 cmake_policy(SET CMP0012 NEW)
-
-# include cmake file for MIRA
 include(CMakeLists.mira)
-
 cmake_policy(POP)
 
 #set the default path for built executables to the "bin" directory
@@ -35,17 +33,9 @@ mira_require_package(Navigation)
 
 #uncomment if you have defined messages
 rosbuild_genmsg()
+
 #uncomment if you have defined services
 #rosbuild_gensrv()
-
-#common commands for building c++ executables and libraries
-#rosbuild_add_library(${PROJECT_NAME} src/example.cpp)
-#target_link_libraries(${PROJECT_NAME} another_library)
-#rosbuild_add_boost_directories()
-#rosbuild_link_boost(${PROJECT_NAME} thread)
-#rosbuild_add_executable(example examples/example.cpp)
-#target_link_libraries(example ${PROJECT_NAME})
-
 
 rosbuild_add_executable(cognidrive_ros
   src/cognidriveros.cpp
@@ -54,6 +44,6 @@ rosbuild_add_executable(cognidrive_ros
   src/movebaseaction.cpp
 )
 
-target_link_libraries(cognidrive_ros RobotDataTypes)
+target_link_libraries(cognidrive_ros RobotDataTypes Navigation)
 rosbuild_link_boost(cognidrive_ros thread)
 rosbuild_add_mira(cognidrive_ros)

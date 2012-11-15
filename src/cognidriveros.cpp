@@ -1,9 +1,17 @@
 #include <cognidriveros.h>
+#include <tclap/CmdLine.h>
 
 CogniDriveRos::CogniDriveRos(int argc, char **argv)
 {
+    TCLAP::CmdLine cmd("cognidrive_ros tries to connect MetraLab's CogniDrive to ROS.");
+    TCLAP::SwitchArg simulationSwitch("s","simulation","Enable simulation mode.", false);
+    cmd.add(simulationSwitch);
+    cmd.parse(argc, argv);
+    const bool simulation = simulationSwitch.getValue();
+
     // ros init
     ros::init(argc, argv, "cognidrive_ros");
+
     mRosNodeHandle = new ros::NodeHandle;
 
     mRosTransformBroadcaster = new tf::TransformBroadcaster;
@@ -40,17 +48,31 @@ CogniDriveRos::CogniDriveRos(int argc, char **argv)
     // and publish its methods as service
     mMiraAuthority->publishService(*mDummyDrive);
 
+    // The names of the channels need to match those defined in the robot configuration file (e.g. PilotDemo.xml).
+
     // create a MIRA channel to publish rangescans coming from ROS/gazebo (in simulation)
-    mMiraChannelRangeScan = mMiraAuthority->publish<mira::robot::RangeScan>("/robot/Laser");
+    mMiraChannelRangeScan = mMiraAuthority->publish<mira::robot::RangeScan>("/robot/FrontLaser/Laser");
     // create a MIRA channel to publish odometry coming from ROS/gazebo (in simulation)
     mMiraChannelOdometry = mMiraAuthority->publish<mira::robot::Odometry2>("/robot/Odometry");
 
-    // subscribe to MIRA laserscans and forward them to ROS (in real application)
-    mMiraAuthority->subscribe<mira::robot::RangeScan>("/robot/Laser", &CogniDriveRos::onMiraLaserScan, this);
-    // subscribe to MIRA odometry and forward it to ROS (in real application)
-    mMiraAuthority->subscribe<mira::robot::Odometry2>("/robot/Odometry", &CogniDriveRos::onMiraOdometry, this);
-    // subscribe to MIRA batterystate and forward it to ROS (in real application)
-    mMiraAuthority->subscribe<mira::robot::BatteryState>("/robot/Battery", &CogniDriveRos::onMiraBatteryState, this);
+
+    if(simulation)
+    {
+      ROS_INFO("cognidrive_ros started in simulation mode - ignoring MIRA rangescans, odometry and battery.");
+    }
+    else
+    {
+      ROS_INFO("cognidrive_ros started in application mode - listening to MIRA rangescans, odometry and battery.");
+
+      // subscribe to MIRA laserscans and forward them to ROS (in real application)
+      mMiraAuthority->subscribe<mira::robot::RangeScan>("/robot/Laser", &CogniDriveRos::onMiraLaserScan, this);
+
+      // subscribe to MIRA odometry and forward it to ROS (in real application)
+      mMiraAuthority->subscribe<mira::robot::Odometry2>("/robot/Odometry", &CogniDriveRos::onMiraOdometry, this);
+
+      // subscribe to MIRA batterystate and forward it to ROS (in real application)
+      mMiraAuthority->subscribe<mira::robot::BatteryState>("/robot/charger/Battery", &CogniDriveRos::onMiraBatteryState, this);
+    }
 
     // transform things
     //mMiraAuthority->addTransformLink("child", "parent");
@@ -72,6 +94,8 @@ void CogniDriveRos::onMiraLaserScan(mira::ChannelRead<mira::robot::RangeScan> da
 
     scanRos.header.stamp = ros::Time::fromBoost(data.getTimestamp());
     scanRos.header.frame_id = data.getChannelID();
+
+    // There is data->sequenceID, but this isn't currently used in MIRA
     scanRos.header.seq = mNumberOfPacketsMira2RosLaserScan++;
 
     // now publish the laserscan to ROS
@@ -84,6 +108,8 @@ void CogniDriveRos::onMiraOdometry(mira::ChannelRead<mira::robot::Odometry2> dat
 
     odomRos.header.stamp = ros::Time::fromBoost(data.getTimestamp());
     odomRos.header.frame_id = data.getChannelID();
+
+    // There is data->sequenceID, but this isn't currently used in MIRA
     odomRos.header.seq = mNumberOfPacketsMira2RosOdometry++;
 
     // now publish the laserscan to ROS
@@ -93,7 +119,7 @@ void CogniDriveRos::onMiraOdometry(mira::ChannelRead<mira::robot::Odometry2> dat
     // tf tree. But there is no way to be notified of this event. Since cognidrive always
     // publishes odometry and transform-tree at the same time (exact order is unknown), we
     // simply abuse this odometry-callback to read the transform and publish that into ROS::TF
-    mira::Pose2 p = mMiraAuthority->getTransform<mira::Pose2>("/robot/robotFrame", "/globalFrame", data.getTimestamp());
+    mira::Pose2 p = mMiraAuthority->getTransform<mira::Pose2>("/robot/RobotFrame", "/GlobalFrame", data.getTimestamp());
 
     tf::Transform transform;
     transform.setOrigin( tf::Vector3(data->pose.x(), data->pose.y(), 0.0) );
@@ -108,6 +134,8 @@ void CogniDriveRos::onMiraBatteryState(mira::ChannelRead<mira::robot::BatterySta
 
     batteryRos.header.stamp = ros::Time::fromBoost(data.getTimestamp());
     batteryRos.header.frame_id = data.getChannelID();
+
+    // There is data->sequenceID, but this isn't currently used in MIRA
     batteryRos.header.seq = mNumberOfPacketsMira2RosBattery++;
 
     // now publish the laserscan to ROS

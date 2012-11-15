@@ -29,7 +29,12 @@ MoveBaseAction::MoveBaseAction(std::string name, mira::Authority* miraAuthority)
     // actually tell MIRA/cognidrive to move - see http://www.mira-project.org/MIRA-doc/domains/navigation/Pilot/
     boost::shared_ptr<mira::navigation::Task> task(new mira::navigation::Task());
 
-    // Tell MIRA where to go
+    // Tell MIRA where to go.
+    // The tolerances describe the radii around the target region. MinTolerance defines
+    // the radius around the target where the pathplanner deems the robot to have
+    // arrived. But then, the OrientationTask might still move the robot at the target,
+    // again moving it away from the target further than MaxTolerance. This would cause
+    // the pathplanner to become active again, leading to an endless oscillation.
     task->addSubTask(
       mira::navigation::SubTaskPtr(
 	new mira::navigation::PositionTask(
@@ -37,8 +42,8 @@ MoveBaseAction::MoveBaseAction(std::string name, mira::Authority* miraAuthority)
 	    mGoal.pose.position.x,
 	    mGoal.pose.position.y
 	  ),
-	  0.2f, // minimum tolerance??
-	  0.3f  // maximum tolerance??
+	  0.1f, // minimum tolerance??
+	  0.2f  // maximum tolerance??
 	)
       )
     );
@@ -75,8 +80,7 @@ MoveBaseAction::MoveBaseAction(std::string name, mira::Authority* miraAuthority)
     ROS_INFO("%s: Preempted", mActionName.c_str());
 
     // tell MIRA to cancel driving - is it ok to just set an empty task?
-    boost::shared_ptr<mira::navigation::Task> task(new mira::navigation::Task());
-    mMiraAuthority->callService<void>("/robot/navigation/Pilot", "setTask", task);
+    mMiraAuthority->callService<void>("/robot/navigation/Pilot", "setTask", boost::shared_ptr<mira::navigation::Task>());
 
     // set the action state to preempted
     mActionServer.setPreempted();
