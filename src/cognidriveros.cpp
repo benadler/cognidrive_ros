@@ -3,7 +3,7 @@
 
 CogniDriveRos::CogniDriveRos(int argc, char **argv)
 {
-    TCLAP::CmdLine cmd("cognidrive_ros tries to connect MetraLab's CogniDrive to ROS.");
+    TCLAP::CmdLine cmd("cognidrive_ros connects MetraLab's CogniDrive to ROS.");
     TCLAP::SwitchArg simulationSwitch("s","simulation","Enable simulation mode.", false);
     cmd.add(simulationSwitch);
     cmd.parse(argc, argv);
@@ -104,6 +104,7 @@ void CogniDriveRos::onMiraLaserScan(mira::ChannelRead<mira::robot::RangeScan> da
 
 void CogniDriveRos::onMiraOdometry(mira::ChannelRead<mira::robot::Odometry2> data)
 {
+    // The converted ROS-odometry might be useless or even dangerous, see the callee for info.
     nav_msgs::Odometry odomRos = Converter::mira2ros(*data);
 
     odomRos.header.stamp = ros::Time::fromBoost(data.getTimestamp());

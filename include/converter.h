@@ -13,6 +13,7 @@
 
 struct Converter
 {
+  /*
     static mira::robot::BatteryState ros2mira(const pr2_msgs::BatteryState2& batteryRos)
     {
         bool present = batteryRos.present;
@@ -20,6 +21,7 @@ struct Converter
 
 	return batteryMira;
     }
+    */
 
     static pr2_msgs::BatteryServer2 mira2ros(const mira::robot::BatteryState& batteryMira)
     {
@@ -60,9 +62,19 @@ struct Converter
 
     static nav_msgs::Odometry mira2ros(const mira::robot::Odometry2& odomMira)
     {
+	// I have no idea how useful a converted odometry message from MIRA is for ROS,
+	// as the MIRA message only contains pose and velocity, while ROS might also
+	// need linear and angular twist as well as covariances for both pose and twist.
+	// These will be set to zero during the conversion.
+
 	nav_msgs::Odometry odomRos;
 
-	// convert!
+	// this conversion is almost certainly wrong.
+	odomRos.pose.pose.position.x = odomMira.pose.x();
+	odomRos.pose.pose.position.y = odomMira.pose.y();
+
+	odomRos.twist.twist.linear.x = odomMira.velocity.x();
+	odomRos.twist.twist.linear.y = odomMira.velocity.y();
 
 	return odomRos;
     }
