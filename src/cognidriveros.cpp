@@ -4,10 +4,13 @@
 CogniDriveRos::CogniDriveRos(int argc, char **argv)
 {
     TCLAP::CmdLine cmd("cognidrive_ros connects MetraLab's CogniDrive to ROS.");
-    TCLAP::SwitchArg simulationSwitch("s","simulation","Enable simulation mode.", false);
-    cmd.add(simulationSwitch);
+    TCLAP::SwitchArg switchSimulation("s","simulation","Enable simulation mode.", false);
+    // we don't really process the -c parameter using TCLAP, but TCLAP would fail if we specify -c without it knowing the parameter
+    TCLAP::ValueArg<std::string> switchMiraConfiguration("c","config","A MIRA configuration file (*.xml).",false,"","string");
+    cmd.add(switchSimulation);
+    cmd.add(switchMiraConfiguration);
     cmd.parse(argc, argv);
-    const bool simulation = simulationSwitch.getValue();
+    mSimulation = switchSimulation.getValue();
 
     // ros init
     ros::init(argc, argv, "cognidrive_ros");
@@ -19,22 +22,8 @@ CogniDriveRos::CogniDriveRos(int argc, char **argv)
     mNumberOfPacketsMira2RosLaserScan = 0;
     mNumberOfPacketsMira2RosOdometry = 0;
     mNumberOfPacketsMira2RosBattery = 0;
-
-    // set up all the topics we want to send into ROS - laserscans first, topic name matches PR2
-    mRosPubLaserScan = mRosNodeHandle->advertise<sensor_msgs::LaserScan>("/base_scan", 50);
-
-    // this is the odometry as we know it. We could also publish /base_odometry/odometry
-    // (total distance/angle travelled) and /base_odometry/odomstate (errors and expected slip)
-    mRosPubOdometry = mRosNodeHandle->advertise<nav_msgs::Odometry>("/base_odometry/odom", 50);
-
-    // the ROS BatteryServer2 messages are a bit overkill for MIRA's BatteryState, as the PR2
-    // manages around 48 batteries, while MIRA abstracts Scitos' 2 batteries into a single one.
-    mRosPubBatteryState = mRosNodeHandle->advertise<pr2_msgs::BatteryServer2>("/battery/server2", 50);
-
-    // whenever we receive laserscans from ROS (gazebo), we want to send it to MIRA/CogniDrive
-    mRosSubLaserScan = mRosNodeHandle->subscribe("/base_scan", 1000, &CogniDriveRos::onRosLaserScan, this);
-    // whenever we receive odometry from ROS (gazebo), we want to send it to MIRA/CogniDrive
-    mRosSubOdometry = mRosNodeHandle->subscribe("/base_odometry/odom", 1000, &CogniDriveRos::onRosOdometry, this);
+    mNumberOfPacketsMira2RosMapMetaData = 0;
+    mNumberOfPacketsMira2RosMapOccupancyGrid = 0;
 
     // Create and start the mira framework
     // add -c scitos....xml to start cognidrive here - we should specify it in the ROS launchfile
@@ -42,30 +31,60 @@ CogniDriveRos::CogniDriveRos(int argc, char **argv)
 
     // Create mira authority. This is like ros::NodeHandle
     mMiraAuthority = new mira::Authority("/", "cognidrive_ros");
-
-    // Create dummy drive, so cognidrive will set the velocity on this object, which will forward it to ROS
-    mDummyDrive = new DummyDrive(mRosNodeHandle->advertise<geometry_msgs::Twist>("cmd_vel", 1));
-    // and publish its methods as service
-    mMiraAuthority->publishService(*mDummyDrive);
-
-    // The names of the channels need to match those defined in the robot configuration file (e.g. PilotDemo.xml).
-
-    // create a MIRA channel to publish rangescans coming from ROS/gazebo (in simulation)
-    mMiraChannelRangeScan = mMiraAuthority->publish<mira::robot::RangeScan>("/robot/FrontLaser/Laser");
-    // create a MIRA channel to publish odometry coming from ROS/gazebo (in simulation)
-    mMiraChannelOdometry = mMiraAuthority->publish<mira::robot::Odometry2>("/robot/Odometry");
-
-
-    if(simulation)
+    
+    // Whenever we receive an initial pose estimate, we want to send it to MIRA/CogniDrive
+    mRosSubInitialPose = mRosNodeHandle->subscribe("initialpose", 1, &CogniDriveRos::onRosInitialPose, this);
+    
+    if(mSimulation)
     {
-      ROS_INFO("cognidrive_ros started in simulation mode - ignoring MIRA rangescans, odometry and battery.");
+      ROS_INFO("cognidrive_ros started in simulation mode:");
+      ROS_INFO(" -> ignoring MIRA rangescans, odometry and battery to prevent loops");
+      ROS_INFO(" -> forwarding ROS laserscans and odometry to cognidrive.");
+      ROS_INFO(" -> forwarding cognidrive's drive-command to ROS/cmd_vel topic.");
+      
+      // In simulation, whenever we receive laserscans from ROS (gazebo), we want to send it to MIRA/CogniDrive
+      mRosSubLaserScan = mRosNodeHandle->subscribe("/base_scan", 10, &CogniDriveRos::onRosLaserScan, this);
+
+      // In simulation, whenever we receive odometry from ROS (gazebo), we want to send it to MIRA/CogniDrive
+      mRosSubOdometry = mRosNodeHandle->subscribe("/base_odometry/odom", 100, &CogniDriveRos::onRosOdometry, this);
+
+      // The names of the channels need to match those defined in the robot configuration file (e.g. PilotDemo.xml).
+      // create a MIRA channel to publish rangescans coming from ROS/gazebo (in simulation)
+      mMiraChannelRangeScan = mMiraAuthority->publish<mira::robot::RangeScan>("/robot/FrontLaser/Laser");
+      // create a MIRA channel to publish odometry coming from ROS/gazebo (in simulation)
+      mMiraChannelOdometry = mMiraAuthority->publish<mira::robot::Odometry2>("/robot/Odometry");
+
+      // Create dummy drive, so cognidrive will set the velocity on this object, which will forward it to ROS.
+      // That way, gazebo can move the robot according to CogniDrive's commands
+      mDummyDrive = new DummyDrive(mRosNodeHandle->advertise<geometry_msgs::Twist>("cmd_vel", 1));
+      // and publish its methods as service
+      mMiraAuthority->publishService(*mDummyDrive);
     }
     else
     {
-      ROS_INFO("cognidrive_ros started in application mode - listening to MIRA rangescans, odometry and battery.");
+      ROS_INFO("cognidrive_ros started in application mode:");
+      ROS_INFO(" -> forwarding MIRA rangescans, odometry and battery to ROS.");
+      ROS_INFO(" -> forwarding ROS/cmd_vel to cognidrive for transparent driving.");
+      
+      // set up all the topics we want to send into ROS - laserscans first, topic name matches PR2
+      mRosPubLaserScanFront = mRosNodeHandle->advertise<sensor_msgs::LaserScan>("/base_scan", 10);
+      mRosPubLaserScanRear = mRosNodeHandle->advertise<sensor_msgs::LaserScan>("/base_scan_rear", 10);
+
+      // this is the odometry as we know it. We could also publish /base_odometry/odometry
+      // (total distance/angle travelled) and /base_odometry/odomstate (errors and expected slip)
+      mRosPubOdometry = mRosNodeHandle->advertise<nav_msgs::Odometry>("/base_odometry/odom", 50);
+
+      // the ROS BatteryServer2 messages are a bit overkill for MIRA's BatteryState, as the PR2
+      // manages around 48 batteries, while MIRA abstracts Scitos' 2 batteries into a single one.
+      mRosPubBatteryState = mRosNodeHandle->advertise<pr2_msgs::BatteryServer2>("/battery/server2", 1);
+
+      // In application, whenever we receive CmdVel/Twists from ROS, we want to send it to the robots real motors.
+      // In simulation, we don't listen, because the differential-drive node in ROS does the wheel-moving in gazebo
+      mRosSubCmdVel = mRosNodeHandle->subscribe("/cmd_vel", 100, &CogniDriveRos::onRosCmdVel, this);
 
       // subscribe to MIRA laserscans and forward them to ROS (in real application)
-      mMiraAuthority->subscribe<mira::robot::RangeScan>("/robot/Laser", &CogniDriveRos::onMiraLaserScan, this);
+      mMiraAuthority->subscribe<mira::robot::RangeScan>("/robot/FrontLaser/Laser", &CogniDriveRos::onMiraLaserScanFront, this);
+      mMiraAuthority->subscribe<mira::robot::RangeScan>("/robot/RearLaser/Laser", &CogniDriveRos::onMiraLaserScanRear, this);
 
       // subscribe to MIRA odometry and forward it to ROS (in real application)
       mMiraAuthority->subscribe<mira::robot::Odometry2>("/robot/Odometry", &CogniDriveRos::onMiraOdometry, this);
@@ -73,6 +92,12 @@ CogniDriveRos::CogniDriveRos(int argc, char **argv)
       // subscribe to MIRA batterystate and forward it to ROS (in real application)
       mMiraAuthority->subscribe<mira::robot::BatteryState>("/robot/charger/Battery", &CogniDriveRos::onMiraBatteryState, this);
     }
+    
+    // publish MIRA/cognidrive maps to ROS in both simulation and application
+    ROS_INFO(" -> forwarding cognidrive's map to ROS");
+    mRosPubMapMetaData = mRosNodeHandle->advertise<nav_msgs::MapMetaData>("/map_metadata", 1, /*latch:*/ true);
+    mRosPubMapOccupancyGrid = mRosNodeHandle->advertise<nav_msgs::OccupancyGrid>("/map", 1, /*latch:*/ true);
+    mMiraAuthority->subscribe<mira::maps::OccupancyGrid>("/GlobalMap", &CogniDriveRos::onMiraMap, this);
 
     // transform things
     //mMiraAuthority->addTransformLink("child", "parent");
@@ -87,8 +112,9 @@ CogniDriveRos::~CogniDriveRos()
 {
 }
 
-void CogniDriveRos::onMiraLaserScan(mira::ChannelRead<mira::robot::RangeScan> data)
+void CogniDriveRos::onMiraLaserScanFront(mira::ChannelRead<mira::robot::RangeScan> data)
 {
+    //ROS_INFO("CogniDriveRos::onMiraLaserScan(): forwarding a laserscan (front) from MIRA to ROS");
     // do something with value->range, ...
     sensor_msgs::LaserScan scanRos = Converter::mira2ros(*data);
 
@@ -99,11 +125,28 @@ void CogniDriveRos::onMiraLaserScan(mira::ChannelRead<mira::robot::RangeScan> da
     scanRos.header.seq = mNumberOfPacketsMira2RosLaserScan++;
 
     // now publish the laserscan to ROS
-    mRosPubLaserScan.publish(scanRos);
+    mRosPubLaserScanFront.publish(scanRos);
+}
+
+void CogniDriveRos::onMiraLaserScanRear(mira::ChannelRead<mira::robot::RangeScan> data)
+{
+    //ROS_INFO("CogniDriveRos::onMiraLaserRear(): forwarding a laserscan (rear) from MIRA to ROS");
+    // do something with value->range, ...
+    sensor_msgs::LaserScan scanRos = Converter::mira2ros(*data);
+
+    scanRos.header.stamp = ros::Time::fromBoost(data.getTimestamp());
+    scanRos.header.frame_id = data.getChannelID();
+
+    // There is data->sequenceID, but this isn't currently used in MIRA
+    scanRos.header.seq = mNumberOfPacketsMira2RosLaserScan++;
+
+    // now publish the laserscan to ROS
+    mRosPubLaserScanRear.publish(scanRos);
 }
 
 void CogniDriveRos::onMiraOdometry(mira::ChannelRead<mira::robot::Odometry2> data)
 {
+  
     // The converted ROS-odometry might be useless or even dangerous, see the callee for info.
     nav_msgs::Odometry odomRos = Converter::mira2ros(*data);
 
@@ -122,14 +165,19 @@ void CogniDriveRos::onMiraOdometry(mira::ChannelRead<mira::robot::Odometry2> dat
     // simply abuse this odometry-callback to read the transform and publish that into ROS::TF
     mira::Pose2 p = mMiraAuthority->getTransform<mira::Pose2>("/robot/RobotFrame", "/GlobalFrame", data.getTimestamp());
 
+    ROS_INFO("CogniDriveRos::onMiraOdometry(): forwarding odometry %d from MIRA to ROS and publishing cognidrive's position (%2.2f/%2.2f/%2.2f deg) into ROS::tf", mNumberOfPacketsMira2RosOdometry, p.x(), p.y(), mira::rad2deg(p.phi()));
+
     tf::Transform transform;
-    transform.setOrigin( tf::Vector3(data->pose.x(), data->pose.y(), 0.0) );
-    transform.setRotation( tf::Quaternion(data->pose.phi(), 0, 0) );
-    mRosTransformBroadcaster->sendTransform(tf::StampedTransform(transform, ros::Time::fromBoost((data.getTimestamp())), "world", "robot??! XXX TODO"));
+    transform.setOrigin( tf::Vector3(p.x(), p.y(), 0.0) );
+    transform.setRotation( tf::Quaternion(p.phi(), 0, 0) );
+
+    // TODO: ask denis: should this be /base_link to /map?
+    mRosTransformBroadcaster->sendTransform(tf::StampedTransform(transform, ros::Time::fromBoost((data.getTimestamp())), "world", "odom_base"));
 }
 
 void CogniDriveRos::onMiraBatteryState(mira::ChannelRead<mira::robot::BatteryState> data)
 {
+    
     // This message has no header, thus no seq, time and frame_id
     pr2_msgs::BatteryServer2 batteryRos = Converter::mira2ros(*data);
 
@@ -139,25 +187,61 @@ void CogniDriveRos::onMiraBatteryState(mira::ChannelRead<mira::robot::BatterySta
     // There is data->sequenceID, but this isn't currently used in MIRA
     batteryRos.header.seq = mNumberOfPacketsMira2RosBattery++;
 
+    ROS_INFO("CogniDriveRos::onMiraBatteryState(): forwarding batterystate %d from MIRA to ROS: %d percent charge", mNumberOfPacketsMira2RosBattery, batteryRos.average_charge);
+    
     // now publish the laserscan to ROS
     mRosPubBatteryState.publish(batteryRos);
 }
 
+void CogniDriveRos::onMiraMap(mira::ChannelRead<mira::maps::OccupancyGrid> data)
+{
+    ROS_INFO("CogniDriveRos::onMiraMap(): forwarding a map from MIRA to ROS");
+
+    nav_msgs::OccupancyGrid mapOccupancyGridRos = Converter::mira2ros(*data);
+    mapOccupancyGridRos.header.stamp = ros::Time::fromBoost(data.getTimestamp());
+    mapOccupancyGridRos.header.frame_id = data.getChannelID();
+    mapOccupancyGridRos.header.seq = mNumberOfPacketsMira2RosMapMetaData++;
+    mRosPubMapOccupancyGrid.publish(mapOccupancyGridRos);
+    
+    nav_msgs::MapMetaData mapMetaDataRos = Converter::mira2ros(*data);
+    mapMetaDataRos.header.stamp = ros::Time::fromBoost(data.getTimestamp());
+    mapMetaDataRos.header.frame_id = data.getChannelID();
+    mapMetaDataRos.header.seq = mNumberOfPacketsMira2RosMapMetaData++;
+    mRosPubMapMetaData.publish(mapMetaDataRos);
+}
+
 // Called for every laserscan from ros (probably coming from gazebo).
-// Forward to mira/cognidrive so it can drive in the simulator.
+// Forward to mira/cognidrive so it can drive in the simulator. Make sure to mask invalid (self-scanning) rays, otherwise cognidrive is afraid of running itself over
 void CogniDriveRos::onRosLaserScan(const sensor_msgs::LaserScan::ConstPtr& msg)
 {
-    mMiraChannelRangeScan.post(Converter::ros2mira(*msg), mira::Time(msg->header.stamp.toBoost()));
+    ROS_INFO("CogniDriveRos::onRosLaserScan(): forwarding a laserscan from ROS to MIRA (probably from gazebo), masking first and last 55 rays to prevent self-collision");
+    mMiraChannelRangeScan.post(Converter::ros2mira(*msg, 55), mira::Time(msg->header.stamp.toBoost()));
 }
 
 void CogniDriveRos::onRosOdometry(const nav_msgs::Odometry::ConstPtr& msg)
 {
+    ROS_INFO("CogniDriveRos::onRosOdometry(): forwarding odometry data from ROS to MIRA");
     mMiraChannelOdometry.post(Converter::ros2mira(*msg), mira::Time(msg->header.stamp.toBoost()));
+}
+
+void CogniDriveRos::onRosCmdVel(const geometry_msgs::Twist::ConstPtr& msg)
+{
+    // We received a ROS cmd_vel (e.g. from playstation controller). Lets make the wheels on the real robot move!
+    ROS_INFO("CogniDriveRos::onRosCmdVel(): forwarding ROS cmd_vel message to MIRA::setVelocity()");
+    mMiraAuthority->callService<void>("/robot/Robot", "setVelocity", mira::Velocity2(msg->linear.x, 0.0f, msg->angular.z));
+}
+
+void CogniDriveRos::onRosInitialPose(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg)
+{
+    ROS_INFO("CogniDriveRos::onRosInitialPose(): forwarding ROS initialpose (%2.2f/%2.2f/%2.2f deg) to MIRA", msg->pose.pose.position.x, msg->pose.pose.position.y, mira::rad2deg(tf::getYaw(msg->pose.pose.orientation)));
+    // TODO: implement! Ask Tim Langner how :|
 }
 
 int CogniDriveRos::exec()
 {
     // do the locomotion
+    ROS_INFO("CogniDriveRos::exec(): starting event loop...");
     ros::spin();
+    ROS_INFO("CogniDriveRos::exec(): quitting event loop...");
     return 0;
 }

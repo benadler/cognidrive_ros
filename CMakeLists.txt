@@ -30,6 +30,7 @@ set(LIBRARY_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/lib)
 
 mira_require_package(RobotDataTypes)
 mira_require_package(Navigation)
+#mira_require_package(MIRA-commercial/toolboxes/Mapping/include/maps/)
 
 #uncomment if you have defined messages
 rosbuild_genmsg()

@@ -1,15 +1,16 @@
 #include <movebaseaction.h>
 
 MoveBaseAction::MoveBaseAction(std::string name, mira::Authority* miraAuthority) :
+  mRosNodeHandle(),
   mActionServer(mRosNodeHandle, name, false),
-  mActionName(name),
-  mMiraAuthority(miraAuthority)
+  mActionName(name)
 {
+    mMiraAuthority = miraAuthority;
     //register the goal and feeback callbacks
     mActionServer.registerGoalCallback(boost::bind(&MoveBaseAction::goalCB, this));
     mActionServer.registerPreemptCallback(boost::bind(&MoveBaseAction::preemptCB, this));
 
-    mMiraAuthority->subscribe<std::string>("PilotEvent", &MoveBaseAction::onCogniDriveStatus/*, this*/);
+    mMiraAuthority->subscribe<std::string>("PilotEvent", &MoveBaseAction::onCogniDriveStatus, this);
 
     // we could subscribe to a ROS topic of interest for generating feedback
     //mSubscriber = mRosNodeHandle.subscribe("/random_number", 1, &MoveBaseAction::analysisCB, this);

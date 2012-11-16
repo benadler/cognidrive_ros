@@ -128,7 +128,7 @@ struct Converter
 	return scanRos;
     }
 
-    static mira::robot::RangeScan ros2mira(const sensor_msgs::LaserScan& scanRos)
+    static mira::robot::RangeScan ros2mira(const sensor_msgs::LaserScan& scanRos, const unsigned int numberOfOuterRaysToMask = 20)
     {
 	mira::robot::RangeScan scanMira;
 
@@ -149,7 +149,7 @@ struct Converter
 	// measure this correctly!
 	scanMira.valid.resize(scanRos.ranges.size());
 	for(unsigned int i = 0; i < scanRos.ranges.size(); ++i)
-	  if(i < 20 || i > scanRos.ranges.size() - 20)
+	  if(i < numberOfOuterRaysToMask || i > scanRos.ranges.size() - numberOfOuterRaysToMask)
 	    scanMira.valid[i] = mira::robot::RangeScan::Masked;
 	  else
 	    scanMira.valid[i] = mira::robot::RangeScan::Valid;
@@ -159,6 +159,79 @@ struct Converter
 	    scanMira.reflectance[i] = scanRos.intensities[i];
 
 	return scanMira;
+    }
+    
+    static nav_msgs::OccupancyGrid mira2ros(const mira::maps::OccupancyGrid& map)
+    {
+	nav_msgs::OccupancyGrid mapOccupancyGridRos;
+	
+	/* this is what we need to fill:
+	Header header
+	  uint32 seq
+	  time stamp
+	  string frame_id
+	MapMetaData info - explained below
+	int8[] data - Occupancy probabilities are in the range [0,100].  Unknown is -1.
+	*/
+	
+	mapOccupancyGridRos.info = mira2ros(map);
+	
+	const unsigned int numberOfCells = map.width() * map.height();
+	mapOccupancyGridRos.data.resize(numberOfCells);
+	
+	// ROS stores a gridcell as a
+	//	signed 		int 8: 0-100 is probability of occupancy, unknown is -1
+	// MIRA stores a gridcell as a
+	//	unsigned 	int 8: 0-254 is probability of occupancy, unknown is 255
+	// It turns out that int8 -1 = uint8 255, so we can just copy the data.
+	memcpy(&mapOccupancyGridRos.data, map.data(), numberOfCells);
+
+	// TODO: test this!
+	for(int i=0;i<numberOfCells;i++)
+	  if(mapOccupancyGridRos.data[i] < -1)
+	    mapOccupancyGridRos.data[i] = 100;
+    
+	return mapOccupancyGridRos;
+    }
+    
+    static nav_msgs::MapMetaData mira2ros(const mira::maps::OccupancyGrid& map)
+    {
+	nav_msgs::MapMetaData mapMetaDataRos;
+      
+	/*
+	MapMetaData info
+	  time map_load_time
+	  float32 resolution
+	  uint32 width
+	  uint32 height
+	  geometry_msgs/Pose origin
+	    geometry_msgs/Point position
+	      float64 x
+	      float64 y
+	      float64 z
+	    geometry_msgs/Quaternion orientation
+	      float64 x
+	      float64 y
+	      float64 z
+	      float64 w
+        */
+	
+	mapMetaDataRos.info.map_load_time = ros::Time::now();
+	mapMetaDataRos.info.resolution = map.getCellSize(); // meters per cell
+	mapMetaDataRos.info.width = map.width();
+	mapMetaDataRos.info.height = map.height();
+	mapMetaDataRos.info.origin.position.x = map.getWorldOffset().x();
+	mapMetaDataRos.info.origin.position.y = map.getWorldOffset().y();
+	mapMetaDataRos.info.origin.position.z = 0.0f;
+	
+	// TODO: MIRA doesn't have a concept of rotated maps?!
+	// quaternion: (x, y, z, w) = (0, 0, sin(theta/2), cos(theta/2)).	
+	mapMetaDataRos.info.origin.orientation.x = 0.0f;
+	mapMetaDataRos.info.origin.orientation.y = 0.0f;
+	mapMetaDataRos.info.origin.orientation.z = 0.0f;
+	mapMetaDataRos.info.origin.orientation.w = 1.0f;
+
+	return mapMetaDataRos;
     }
 };
 
