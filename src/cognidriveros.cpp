@@ -97,7 +97,7 @@ CogniDriveRos::CogniDriveRos(int argc, char **argv)
     ROS_INFO(" -> forwarding cognidrive's map to ROS");
     mRosPubMapMetaData = mRosNodeHandle->advertise<nav_msgs::MapMetaData>("/map_metadata", 1, /*latch:*/ true);
     mRosPubMapOccupancyGrid = mRosNodeHandle->advertise<nav_msgs::OccupancyGrid>("/map", 1, /*latch:*/ true);
-    mMiraAuthority->subscribe<mira::maps::OccupancyGrid>("/GlobalMap", &CogniDriveRos::onMiraMap, this);
+    mMiraAuthority->subscribe<mira::maps::OccupancyGrid>("/maps/static/Map", &CogniDriveRos::onMiraMap, this);
 
     // transform things
     //mMiraAuthority->addTransformLink("child", "parent");
@@ -146,7 +146,6 @@ void CogniDriveRos::onMiraLaserScanRear(mira::ChannelRead<mira::robot::RangeScan
 
 void CogniDriveRos::onMiraOdometry(mira::ChannelRead<mira::robot::Odometry2> data)
 {
-  
     // The converted ROS-odometry might be useless or even dangerous, see the callee for info.
     nav_msgs::Odometry odomRos = Converter::mira2ros(*data);
 
@@ -171,8 +170,7 @@ void CogniDriveRos::onMiraOdometry(mira::ChannelRead<mira::robot::Odometry2> dat
     transform.setOrigin( tf::Vector3(p.x(), p.y(), 0.0) );
     transform.setRotation( tf::Quaternion(p.phi(), 0, 0) );
 
-    // TODO: ask denis: should this be /base_link to /map?
-    mRosTransformBroadcaster->sendTransform(tf::StampedTransform(transform, ros::Time::fromBoost((data.getTimestamp())), "world", "odom_base"));
+    mRosTransformBroadcaster->sendTransform(tf::StampedTransform(transform, ros::Time::fromBoost((data.getTimestamp())), "map", "base_link"));
 }
 
 void CogniDriveRos::onMiraBatteryState(mira::ChannelRead<mira::robot::BatteryState> data)
@@ -197,7 +195,10 @@ void CogniDriveRos::onMiraMap(mira::ChannelRead<mira::maps::OccupancyGrid> data)
 {
     ROS_INFO("CogniDriveRos::onMiraMap(): forwarding a map from MIRA to ROS");
 
-    nav_msgs::OccupancyGrid mapOccupancyGridRos = Converter::mira2ros(*data);
+    // Fetch map transform from MIRA
+    mira::Pose2 poseMap = mMiraAuthority->getTransform<mira::Pose2>("/maps/static/MapFrame", "/GlobalFrame", mira::Time::now());
+    
+    nav_msgs::OccupancyGrid mapOccupancyGridRos = Converter::mira2ros(*data, poseMap);
     mapOccupancyGridRos.header.stamp = ros::Time::fromBoost(data.getTimestamp());
     mapOccupancyGridRos.header.frame_id = data.getChannelID();
     mapOccupancyGridRos.header.seq = mNumberOfPacketsMira2RosMapMetaData++;
@@ -234,7 +235,15 @@ void CogniDriveRos::onRosCmdVel(const geometry_msgs::Twist::ConstPtr& msg)
 void CogniDriveRos::onRosInitialPose(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg)
 {
     ROS_INFO("CogniDriveRos::onRosInitialPose(): forwarding ROS initialpose (%2.2f/%2.2f/%2.2f deg) to MIRA", msg->pose.pose.position.x, msg->pose.pose.position.y, mira::rad2deg(tf::getYaw(msg->pose.pose.orientation)));
-    // TODO: implement! Ask Tim Langner how :|
+    
+    mira::PoseCov2 p = Converter::ros2mira(msg);
+    auto s = queryServicesForInterface("ILocalization");
+    if(!s.empty())
+    {
+      auto result = callService<void>(s.front(), "setInitPose", pose);
+      result.timedWait(mira::Duration::seconds(10));
+      result.get(); // causes exception if something went wrong.
+    }
 }
 
 int CogniDriveRos::exec()

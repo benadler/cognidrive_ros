@@ -194,10 +194,9 @@ struct Converter
 	return mapOccupancyGridRos;
     }
     
-    static nav_msgs::MapMetaData mira2ros(const mira::maps::OccupancyGrid& map)
+    static nav_msgs::MapMetaData mira2ros(const mira::maps::OccupancyGrid& map, const mira::Pose2& poseMap)
     {
 	nav_msgs::MapMetaData mapMetaDataRos;
-      
 	/*
 	MapMetaData info
 	  time map_load_time
@@ -213,27 +212,38 @@ struct Converter
 	      float64 x
 	      float64 y
 	      float64 z
-	      float64 w
-        */
+	      float64 w */
 	
 	mapMetaDataRos.info.map_load_time = ros::Time::now();
 	mapMetaDataRos.info.resolution = map.getCellSize(); // meters per cell
 	mapMetaDataRos.info.width = map.width();
 	mapMetaDataRos.info.height = map.height();
-	mapMetaDataRos.info.origin.position.x = map.getWorldOffset().x();
-	mapMetaDataRos.info.origin.position.y = map.getWorldOffset().y();
+	mapMetaDataRos.info.origin.position.x = /*map.getWorldOffset().x() +*/ poseMap.x(); // check whether the former is included in poseMap
+	mapMetaDataRos.info.origin.position.y = /*map.getWorldOffset().y() +*/ poseMap.y(); // check whether the former is included in poseMap
 	mapMetaDataRos.info.origin.position.z = 0.0f;
-	
-	// TODO: MIRA doesn't have a concept of rotated maps?!
-	// quaternion: (x, y, z, w) = (0, 0, sin(theta/2), cos(theta/2)).	
-	mapMetaDataRos.info.origin.orientation.x = 0.0f;
-	mapMetaDataRos.info.origin.orientation.y = 0.0f;
-	mapMetaDataRos.info.origin.orientation.z = 0.0f;
-	mapMetaDataRos.info.origin.orientation.w = 1.0f;
 
+	// create quaternion from MIRA's poseMap.phi()
+	mapMetaDataRos.info.origin.orientation = tf::createQuaternionMsgFromYaw(poseMap.phi());
 	return mapMetaDataRos;
     }
+    
+    static mira::PoseCov2 ros2mira(geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg)
+    {
+      mira::PoseCov2 poseCov;
+      
+      poseCov.x() = msg->pose.pose.position.x;
+      poseCov.y() = msg->pose.pose.position.y;
+      
+      double roll, pitch, yaw;
+      tf::Matrix3x3(q).getRPY(roll, pitch, yaw);
+      
+      poseCov.phi() = yaw;
+      
+      // covariances
+      poseCov.cov[0][0] = msg->pose.covariance[6*0+0];
+      poseCov.cov[1][1] = msg->pose.covariance[6*1+1];
+      poseCov.cov[2][2] = msg->pose.covariance[6*5+5];
+    }
 };
-
 
 #endif
