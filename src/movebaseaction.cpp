@@ -1,31 +1,35 @@
 #include <movebaseaction.h>
 
-MoveBaseAction::MoveBaseAction(std::string name, mira::Authority* miraAuthority) :
-  mRosNodeHandle(),
-  mActionServer(mRosNodeHandle, name, false),
-  mActionName(name)
+MoveBaseAction::MoveBaseAction(ros::NodeHandle* nodeHandle, mira::Authority* miraAuthority)
 {
     mMiraAuthority = miraAuthority;
+    mRosNodeHandle = nodeHandle;
+    mActionName = std::string("MoveBaseAction");
+    mActionServer = new actionlib::SimpleActionServer<cognidrive_ros::MoveBaseAction>(*mRosNodeHandle, mActionName, false);
     //register the goal and feeback callbacks
-    mActionServer.registerGoalCallback(boost::bind(&MoveBaseAction::goalCB, this));
-    mActionServer.registerPreemptCallback(boost::bind(&MoveBaseAction::preemptCB, this));
+    mActionServer->registerGoalCallback(boost::bind(&MoveBaseAction::goalCB, this));
+    mActionServer->registerPreemptCallback(boost::bind(&MoveBaseAction::preemptCB, this));
 
     mMiraAuthority->subscribe<std::string>("PilotEvent", &MoveBaseAction::onCogniDriveStatus, this);
 
     // we could subscribe to a ROS topic of interest for generating feedback
     //mSubscriber = mRosNodeHandle.subscribe("/random_number", 1, &MoveBaseAction::analysisCB, this);
-    mActionServer.start();
+    mActionServer->start();
+    
+    ROS_INFO("MoveBaseAction::MoveBaseAction(): started action server.");
 }
 
-  MoveBaseAction::~MoveBaseAction(void)
-  {
-  }
+MoveBaseAction::~MoveBaseAction(void)
+{
+  delete mActionServer;
+}
 
   // Called when a new goal is set, simply accepts the goal
   void MoveBaseAction::goalCB()
   {
+    ROS_INFO("MoveBaseAction::goalCB(): driving to %2.2f/%2.2f/%2.2f", mGoal.pose.position.x, mGoal.pose.position.y, mira::rad2deg(tf::getYaw(mGoal.pose.orientation)));
     // accept the new goal
-    mGoal = mActionServer.acceptNewGoal()->target_pose;
+    mGoal = mActionServer->acceptNewGoal()->target_pose;
 
     // actually tell MIRA/cognidrive to move - see http://www.mira-project.org/MIRA-doc/domains/navigation/Pilot/
     boost::shared_ptr<mira::navigation::Task> task(new mira::navigation::Task());
@@ -84,29 +88,30 @@ MoveBaseAction::MoveBaseAction(std::string name, mira::Authority* miraAuthority)
     mMiraAuthority->callService<void>("/robot/navigation/Pilot", "setTask", boost::shared_ptr<mira::navigation::Task>());
 
     // set the action state to preempted
-    mActionServer.setPreempted();
+    mActionServer->setPreempted();
   }
 
   void MoveBaseAction::onCogniDriveStatus(mira::ChannelRead<std::string> data)
   {
+    std::string status = data->value();
+    ROS_INFO("MoveBaseAction::onCogniDriveStatus(): status changed to %s.", status.c_str());
     // make sure that the action hasn't been canceled
-    if (!mActionServer.isActive())
+    if (!mActionServer->isActive())
       return;
 
-    std::string status = data->value();
 
     if(status.compare("GoalReached") != 0)
     {
         ROS_INFO("%s: Succeeded", mActionName.c_str());
 
         // set the action state to succeeded - there is no result
-        mActionServer.setSucceeded();
+        mActionServer->setSucceeded();
     }
     else if(status.compare("NoPathPlannable") != 0 || status.compare("NoValidMotionCommand") != 0 || status.compare("NoData") != 0)
     {
 	ROS_INFO("%s: Aborted, reason: %s", mActionName.c_str(), status.c_str());
         // set the action state to aborted
-        mActionServer.setAborted();
+        mActionServer->setAborted();
     }
   }
 /*
@@ -114,7 +119,7 @@ MoveBaseAction::MoveBaseAction(std::string name, mira::Authority* miraAuthority)
   void MoveBaseAction::analysisCB(const std_msgs::Float32::ConstPtr& msg)
   {
     // make sure that the action hasn't been canceled
-    if (!mActionServer.isActive())
+    if (!mActionServer->isActive())
       return;
 
     data_count_++;
@@ -125,7 +130,7 @@ MoveBaseAction::MoveBaseAction(std::string name, mira::Authority* miraAuthority)
     mMoveBaseFeedback.mean = sum_ / data_count_;
     sum_sq_ += pow(msg->data, 2);
     mMoveBaseFeedback.std_dev = sqrt(fabs((sum_sq_/data_count_) - pow(mMoveBaseFeedback.mean, 2)));
-    mActionServer.publishFeedback(mMoveBaseFeedback);
+    mActionServer->publishFeedback(mMoveBaseFeedback);
 
     if(data_count_ > mGoal)
     {
@@ -136,13 +141,13 @@ MoveBaseAction::MoveBaseAction(std::string name, mira::Authority* miraAuthority)
       {
         ROS_INFO("%s: Aborted", mActionName.c_str());
         //set the action state to aborted
-        mActionServer.setAborted(mMoveBaseResult);
+        mActionServer->setAborted(mMoveBaseResult);
       }
       else
       {
         ROS_INFO("%s: Succeeded", mActionName.c_str());
         // set the action state to succeeded
-        mActionServer.setSucceeded(mMoveBaseResult);
+        mActionServer->setSucceeded(mMoveBaseResult);
       }
     }
   }

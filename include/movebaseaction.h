@@ -14,7 +14,7 @@ class MoveBaseAction
 {
 public:
 
-  MoveBaseAction(std::string name, mira::Authority* miraAuthority);
+  MoveBaseAction(ros::NodeHandle* nodeHandle, mira::Authority* miraAuthority);
   ~MoveBaseAction(void);
 
   // Called when a new goal is set, simply accepts the goal
@@ -31,8 +31,8 @@ public:
   void onCogniDriveStatus(mira::ChannelRead<std::string> data);
 
 protected:
-  ros::NodeHandle mRosNodeHandle;
-  actionlib::SimpleActionServer<cognidrive_ros::MoveBaseAction> mActionServer;
+  ros::NodeHandle* mRosNodeHandle;
+  actionlib::SimpleActionServer<cognidrive_ros::MoveBaseAction>* mActionServer;
   std::string mActionName;
   mira::Authority* mMiraAuthority;
   geometry_msgs::PoseStamped mGoal;

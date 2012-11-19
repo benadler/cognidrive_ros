@@ -7,8 +7,10 @@ CogniDriveRos::CogniDriveRos(int argc, char **argv)
     TCLAP::SwitchArg switchSimulation("s","simulation","Enable simulation mode.", false);
     // we don't really process the -c parameter using TCLAP, but TCLAP would fail if we specify -c without it knowing the parameter
     TCLAP::ValueArg<std::string> switchMiraConfiguration("c","config","A MIRA configuration file (*.xml).",false,"","string");
+    TCLAP::ValueArg<int> switchMiraPort("p","fw-port","A MIRA network port.",false,1234,"int");
     cmd.add(switchSimulation);
     cmd.add(switchMiraConfiguration);
+    cmd.add(switchMiraPort);
     cmd.parse(argc, argv);
     mSimulation = switchSimulation.getValue();
 
@@ -97,15 +99,23 @@ CogniDriveRos::CogniDriveRos(int argc, char **argv)
     ROS_INFO(" -> forwarding cognidrive's map to ROS");
     mRosPubMapMetaData = mRosNodeHandle->advertise<nav_msgs::MapMetaData>("/map_metadata", 1, /*latch:*/ true);
     mRosPubMapOccupancyGrid = mRosNodeHandle->advertise<nav_msgs::OccupancyGrid>("/map", 1, /*latch:*/ true);
-    mMiraAuthority->subscribe<mira::maps::OccupancyGrid>("/maps/static/Map", &CogniDriveRos::onMiraMap, this);
+    mira::Channel<mira::maps::OccupancyGrid> miraMapChannel = mMiraAuthority->subscribe<mira::maps::OccupancyGrid>("/maps/static/Map", &CogniDriveRos::onMiraMap, this);
 
+    // Just in case MIRA published the map before we had our callbck set up, manually try to read the map from the channel.
+    try {
+      onMiraMap(miraMapChannel.read());
+    } catch(mira::Exception& e)
+    {
+       ROS_INFO("error reading map from channel: %s", e.what());
+    }
+    
     // transform things
     //mMiraAuthority->addTransformLink("child", "parent");
     //mMiraAuthority->publishTransform("child", mira::Pose2(0.0, 0.0, 0.0), mira::Time::now());
     //mira::Pose2 t = mMiraAuthority->getTransform<mira::Pose2>("child", "parent", mira::Time::now());
 
     // provide ros-actionlib interface to CogniDrive
-    mMoveBaseAction = new MoveBaseAction(ros::this_node::getName(), mMiraAuthority);
+    mMoveBaseAction = new MoveBaseAction(mRosNodeHandle, mMiraAuthority);
 }
 
 CogniDriveRos::~CogniDriveRos()
@@ -119,7 +129,11 @@ void CogniDriveRos::onMiraLaserScanFront(mira::ChannelRead<mira::robot::RangeSca
     sensor_msgs::LaserScan scanRos = Converter::mira2ros(*data);
 
     scanRos.header.stamp = ros::Time::fromBoost(data.getTimestamp());
-    scanRos.header.frame_id = data.getChannelID();
+    scanRos.header.frame_id = data->frameID;//data.getChannelID();
+    
+    mira::Pose2 p = mMiraAuthority->getTransform<mira::Pose2>(data->frameID, "/GlobalFrame", data.getTimestamp());
+//     ROS_INFO("laserscanner to global transform: %2.2f", mira::rad2deg(p.phi())/*(mira::MakeString() << p).c_str()*/);
+    mRosTransformBroadcaster->sendTransform(tf::StampedTransform(miraPoseToRosTransform(&p), ros::Time::fromBoost((data.getTimestamp())), "map", data->frameID));
 
     // There is data->sequenceID, but this isn't currently used in MIRA
     scanRos.header.seq = mNumberOfPacketsMira2RosLaserScan++;
@@ -164,13 +178,9 @@ void CogniDriveRos::onMiraOdometry(mira::ChannelRead<mira::robot::Odometry2> dat
     // simply abuse this odometry-callback to read the transform and publish that into ROS::TF
     mira::Pose2 p = mMiraAuthority->getTransform<mira::Pose2>("/robot/RobotFrame", "/GlobalFrame", data.getTimestamp());
 
-    ROS_INFO("CogniDriveRos::onMiraOdometry(): forwarding odometry %d from MIRA to ROS and publishing cognidrive's position (%2.2f/%2.2f/%2.2f deg) into ROS::tf", mNumberOfPacketsMira2RosOdometry, p.x(), p.y(), mira::rad2deg(p.phi()));
+    //ROS_INFO("CogniDriveRos::onMiraOdometry(): forwarding odometry %d from MIRA to ROS and publishing cognidrive's position (%2.2f/%2.2f/%2.2f deg) into ROS::tf", mNumberOfPacketsMira2RosOdometry, p.x(), p.y(), mira::rad2deg(p.phi()));
 
-    tf::Transform transform;
-    transform.setOrigin( tf::Vector3(p.x(), p.y(), 0.0) );
-    transform.setRotation( tf::Quaternion(p.phi(), 0, 0) );
-
-    mRosTransformBroadcaster->sendTransform(tf::StampedTransform(transform, ros::Time::fromBoost((data.getTimestamp())), "map", "base_link"));
+    mRosTransformBroadcaster->sendTransform(tf::StampedTransform(miraPoseToRosTransform(&p), ros::Time::fromBoost((data.getTimestamp())), "map", "base_link"));
 }
 
 void CogniDriveRos::onMiraBatteryState(mira::ChannelRead<mira::robot::BatteryState> data)
@@ -185,7 +195,7 @@ void CogniDriveRos::onMiraBatteryState(mira::ChannelRead<mira::robot::BatterySta
     // There is data->sequenceID, but this isn't currently used in MIRA
     batteryRos.header.seq = mNumberOfPacketsMira2RosBattery++;
 
-    ROS_INFO("CogniDriveRos::onMiraBatteryState(): forwarding batterystate %d from MIRA to ROS: %d percent charge", mNumberOfPacketsMira2RosBattery, batteryRos.average_charge);
+    //ROS_INFO("CogniDriveRos::onMiraBatteryState(): forwarding batterystate %d from MIRA to ROS: %d percent charge", mNumberOfPacketsMira2RosBattery, batteryRos.average_charge);
     
     // now publish the laserscan to ROS
     mRosPubBatteryState.publish(batteryRos);
@@ -196,19 +206,22 @@ void CogniDriveRos::onMiraMap(mira::ChannelRead<mira::maps::OccupancyGrid> data)
     ROS_INFO("CogniDriveRos::onMiraMap(): forwarding a map from MIRA to ROS");
 
     // Fetch map transform from MIRA
-    mira::Pose2 poseMap = mMiraAuthority->getTransform<mira::Pose2>("/maps/static/MapFrame", "/GlobalFrame", mira::Time::now());
-    
+    const mira::Pose2 poseMap = mMiraAuthority->getTransform<mira::Pose2>("/maps/static/MapFrame", "/GlobalFrame", mira::Time::now());
+
     nav_msgs::OccupancyGrid mapOccupancyGridRos = Converter::mira2ros(*data, poseMap);
     mapOccupancyGridRos.header.stamp = ros::Time::fromBoost(data.getTimestamp());
-    mapOccupancyGridRos.header.frame_id = data.getChannelID();
+    mapOccupancyGridRos.header.frame_id = std::string("/map");//data.getChannelID();
     mapOccupancyGridRos.header.seq = mNumberOfPacketsMira2RosMapMetaData++;
     mRosPubMapOccupancyGrid.publish(mapOccupancyGridRos);
     
-    nav_msgs::MapMetaData mapMetaDataRos = Converter::mira2ros(*data);
-    mapMetaDataRos.header.stamp = ros::Time::fromBoost(data.getTimestamp());
-    mapMetaDataRos.header.frame_id = data.getChannelID();
-    mapMetaDataRos.header.seq = mNumberOfPacketsMira2RosMapMetaData++;
+    nav_msgs::MapMetaData mapMetaDataRos = mapOccupancyGridRos.info;
+//     mapMetaDataRos.header.stamp = ros::Time::fromBoost(data.getTimestamp());
+//     mapMetaDataRos.header.frame_id = data.getChannelID();
+//     mapMetaDataRos.header.seq = mNumberOfPacketsMira2RosMapMetaData++;
     mRosPubMapMetaData.publish(mapMetaDataRos);
+    
+    ROS_INFO("size of map1 is %d * %d.", mapOccupancyGridRos.info.width, mapOccupancyGridRos.info.height);
+    ROS_INFO("size of map2 is %d * %d.", mapMetaDataRos.width, mapMetaDataRos.height);
 }
 
 // Called for every laserscan from ros (probably coming from gazebo).
@@ -236,11 +249,11 @@ void CogniDriveRos::onRosInitialPose(const geometry_msgs::PoseWithCovarianceStam
 {
     ROS_INFO("CogniDriveRos::onRosInitialPose(): forwarding ROS initialpose (%2.2f/%2.2f/%2.2f deg) to MIRA", msg->pose.pose.position.x, msg->pose.pose.position.y, mira::rad2deg(tf::getYaw(msg->pose.pose.orientation)));
     
-    mira::PoseCov2 p = Converter::ros2mira(msg);
-    auto s = queryServicesForInterface("ILocalization");
+    mira::PoseCov2 pose = Converter::ros2mira(msg);
+    auto s = mMiraAuthority->queryServicesForInterface("ILocalization");
     if(!s.empty())
     {
-      auto result = callService<void>(s.front(), "setInitPose", pose);
+      auto result = mMiraAuthority->callService<void>(s.front(), "setInitPose", pose);
       result.timedWait(mira::Duration::seconds(10));
       result.get(); // causes exception if something went wrong.
     }
@@ -251,6 +264,20 @@ int CogniDriveRos::exec()
     // do the locomotion
     ROS_INFO("CogniDriveRos::exec(): starting event loop...");
     ros::spin();
-    ROS_INFO("CogniDriveRos::exec(): quitting event loop...");
+    ROS_INFO("CogniDriveRos::exec(): quit ROS event loop...");
+    
+    ROS_INFO("CogniDriveRos::exec(): requesting MIRA to terminate...");
+    mMiraFramework->requestTermination();
+    ROS_INFO("CogniDriveRos::exec(): MIRA terminated successfully.");
+ 
+    delete mDummyDrive;
+    delete mMoveBaseAction;
+    
+    delete mMiraAuthority;
+    delete mMiraFramework;
+    
+    delete mRosNodeHandle;
+    delete mRosTransformBroadcaster;
+    
     return 0;
 }

@@ -5,6 +5,7 @@
 #include <sensor_msgs/LaserScan.h>
 #include <nav_msgs/Odometry.h>
 #include <pr2_msgs/BatteryState2.h>
+#include <geometry_msgs/PoseWithCovarianceStamped.h>
 
 #include <fw/Framework.h>
 #include <robot/BatteryState.h>
@@ -66,15 +67,19 @@ struct Converter
 	// as the MIRA message only contains pose and velocity, while ROS might also
 	// need linear and angular twist as well as covariances for both pose and twist.
 	// These will be set to zero during the conversion.
-
 	nav_msgs::Odometry odomRos;
 
 	// this conversion is almost certainly wrong.
 	odomRos.pose.pose.position.x = odomMira.pose.x();
 	odomRos.pose.pose.position.y = odomMira.pose.y();
+	
+	odomRos.pose.pose.orientation = tf::createQuaternionMsgFromYaw(odomMira.pose.phi());
 
 	odomRos.twist.twist.linear.x = odomMira.velocity.x();
 	odomRos.twist.twist.linear.y = odomMira.velocity.y();
+	
+	odomRos.twist.twist.angular.z = odomMira.velocity.phi();
+
 
 	return odomRos;
     }
@@ -115,7 +120,7 @@ struct Converter
 	scanRos.scan_time = 0.0f; // mira doesn't know :|
 
 	scanRos.range_min = scanMira.minimumRange;
-	scanRos.range_max = scanMira.minimumRange;
+	scanRos.range_max = scanMira.maximumRange;
 
 	scanRos.ranges.resize(scanMira.range.size());
 	for(unsigned int i = 0; i < scanMira.range.size(); ++i)
@@ -161,7 +166,7 @@ struct Converter
 	return scanMira;
     }
     
-    static nav_msgs::OccupancyGrid mira2ros(const mira::maps::OccupancyGrid& map)
+    static nav_msgs::OccupancyGrid mira2ros(const mira::maps::OccupancyGrid& map, const mira::Pose2& poseMap)
     {
 	nav_msgs::OccupancyGrid mapOccupancyGridRos;
 	
@@ -174,7 +179,16 @@ struct Converter
 	int8[] data - Occupancy probabilities are in the range [0,100].  Unknown is -1.
 	*/
 	
-	mapOccupancyGridRos.info = mira2ros(map);
+	mapOccupancyGridRos.info.map_load_time = ros::Time::now();
+	mapOccupancyGridRos.info.resolution = map.getCellSize(); // meters per cell
+	mapOccupancyGridRos.info.width = map.width();
+	mapOccupancyGridRos.info.height = map.height();
+	mapOccupancyGridRos.info.origin.position.x = /*map.getWorldOffset().x() +*/ poseMap.x(); // check whether the former is included in poseMap
+	mapOccupancyGridRos.info.origin.position.y = /*map.getWorldOffset().y() +*/ poseMap.y(); // check whether the former is included in poseMap
+	mapOccupancyGridRos.info.origin.position.z = 0.0f;
+
+	// create quaternion from MIRA's poseMap.phi()
+	mapOccupancyGridRos.info.origin.orientation = tf::createQuaternionMsgFromYaw(poseMap.phi());
 	
 	const unsigned int numberOfCells = map.width() * map.height();
 	mapOccupancyGridRos.data.resize(numberOfCells);
@@ -184,20 +198,23 @@ struct Converter
 	// MIRA stores a gridcell as a
 	//	unsigned 	int 8: 0-254 is probability of occupancy, unknown is 255
 	// It turns out that int8 -1 = uint8 255, so we can just copy the data.
-	memcpy(&mapOccupancyGridRos.data, map.data(), numberOfCells);
+	memcpy(&mapOccupancyGridRos.data.at(0), map.data(), numberOfCells);
 
 	// TODO: test this!
-	for(int i=0;i<numberOfCells;i++)
+	for(unsigned int i=0;i<numberOfCells;i++)
+	{
 	  if(mapOccupancyGridRos.data[i] < -1)
 	    mapOccupancyGridRos.data[i] = 100;
+	}
     
 	return mapOccupancyGridRos;
     }
     
+	/*
+	   
     static nav_msgs::MapMetaData mira2ros(const mira::maps::OccupancyGrid& map, const mira::Pose2& poseMap)
     {
 	nav_msgs::MapMetaData mapMetaDataRos;
-	/*
 	MapMetaData info
 	  time map_load_time
 	  float32 resolution
@@ -212,22 +229,22 @@ struct Converter
 	      float64 x
 	      float64 y
 	      float64 z
-	      float64 w */
+	      float64 w 
 	
 	mapMetaDataRos.info.map_load_time = ros::Time::now();
 	mapMetaDataRos.info.resolution = map.getCellSize(); // meters per cell
 	mapMetaDataRos.info.width = map.width();
 	mapMetaDataRos.info.height = map.height();
-	mapMetaDataRos.info.origin.position.x = /*map.getWorldOffset().x() +*/ poseMap.x(); // check whether the former is included in poseMap
-	mapMetaDataRos.info.origin.position.y = /*map.getWorldOffset().y() +*/ poseMap.y(); // check whether the former is included in poseMap
+	mapMetaDataRos.info.origin.position.x = poseMap.x(); // check whether map.getWorldOffset().x()  is included in poseMap
+	mapMetaDataRos.info.origin.position.y = poseMap.y(); // check whether the former is included in poseMap
 	mapMetaDataRos.info.origin.position.z = 0.0f;
 
 	// create quaternion from MIRA's poseMap.phi()
 	mapMetaDataRos.info.origin.orientation = tf::createQuaternionMsgFromYaw(poseMap.phi());
 	return mapMetaDataRos;
-    }
-    
-    static mira::PoseCov2 ros2mira(geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg)
+    }    
+	      */
+    static mira::PoseCov2 ros2mira(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg)
     {
       mira::PoseCov2 poseCov;
       
@@ -235,14 +252,18 @@ struct Converter
       poseCov.y() = msg->pose.pose.position.y;
       
       double roll, pitch, yaw;
+      tf::Quaternion q(msg->pose.pose.orientation.x, msg->pose.pose.orientation.y, msg->pose.pose.orientation.z, msg->pose.pose.orientation.w);
       tf::Matrix3x3(q).getRPY(roll, pitch, yaw);
       
       poseCov.phi() = yaw;
       
       // covariances
-      poseCov.cov[0][0] = msg->pose.covariance[6*0+0];
-      poseCov.cov[1][1] = msg->pose.covariance[6*1+1];
-      poseCov.cov[2][2] = msg->pose.covariance[6*5+5];
+      poseCov.cov.setZero(3,3);
+      poseCov.cov(0,0) = msg->pose.covariance[6*0+0];
+      poseCov.cov(1,1) = msg->pose.covariance[6*1+1];
+      poseCov.cov(2,2) = msg->pose.covariance[6*5+5];
+      
+      return poseCov;
     }
 };
 

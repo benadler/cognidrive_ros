@@ -70,6 +70,16 @@ private:
     void onRosOdometry(const nav_msgs::Odometry::ConstPtr& msg);
     void onRosCmdVel(const geometry_msgs::Twist::ConstPtr& msg);
     void onRosInitialPose(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg); // to allow setting an initial pose estimate in e.g. rviz, just like for amcl
+    
+    tf::Transform miraPoseToRosTransform(const mira::Pose2* const pose)
+    {
+      tf::Transform transform;
+      tf::Quaternion q;
+      q.setEuler(0.0f, 0.0f, pose->phi());
+      transform.setRotation(q);
+      transform.setOrigin(tf::Vector3(pose->x(), pose->y(), 0.0));
+      return transform;
+    }
 
 public:
     CogniDriveRos(int argc, char **argv);
