@@ -6,13 +6,14 @@
   <license>BSD</license>
   <review status="unreviewed" notes=""/>
   <url>http://ros.org/wiki/cognidrive_ros</url>
-  <depend package="actionlib"/>
   <depend package="roscpp"/>
   <depend package="tf"/>
   <depend package="roslib"/>
   <depend package="std_msgs"/>
   <depend package="pr2_msgs"/>
   <depend package="geometry_msgs"/>
+  <depend package="move_base_msgs"/>
+  <depend package="actionlib"/>
   <depend package="actionlib_msgs"/>
 
 </package>

@@ -1,33 +1,64 @@
 #include <movebaseaction.h>
 
-MoveBaseAction::MoveBaseAction(ros::NodeHandle* nodeHandle, mira::Authority* miraAuthority)
+MoveBaseAction::MoveBaseAction(mira::Authority* miraAuthority)
 {
     mMiraAuthority = miraAuthority;
-    mRosNodeHandle = nodeHandle;
-    mActionName = std::string("MoveBaseAction");
-    mActionServer = new actionlib::SimpleActionServer<cognidrive_ros::MoveBaseAction>(*mRosNodeHandle, mActionName, false);
-    //register the goal and feeback callbacks
-    mActionServer->registerGoalCallback(boost::bind(&MoveBaseAction::goalCB, this));
-    mActionServer->registerPreemptCallback(boost::bind(&MoveBaseAction::preemptCB, this));
+    mActionName = std::string("move_base");
 
+    ros::NodeHandle nodeHandle(mActionName);
+    mActionServer = new MoveBaseActionServer(ros::NodeHandle(), "move_base", /*autostart*/false);
+
+    //register the goal and feeback callbacks
+    mActionServer->registerGoalCallback(boost::bind(&MoveBaseAction::actionGoalCallBack, this));
+    mActionServer->registerPreemptCallback(boost::bind(&MoveBaseAction::preemptCallBack, this));
+
+    mActionServer->start();
+
+
+    // we can subscribe to a ROS topic or MIRA channel of interest for generating feedback
+    //mSubscriber = mRosNodeHandle.subscribe("/random_number", 1, &MoveBaseAction::analysisCB, this);
     mMiraAuthority->subscribe<std::string>("PilotEvent", &MoveBaseAction::onCogniDriveStatus, this);
 
-    // we could subscribe to a ROS topic of interest for generating feedback
-    //mSubscriber = mRosNodeHandle.subscribe("/random_number", 1, &MoveBaseAction::analysisCB, this);
-    mActionServer->start();
-    
+    // This is mildly confusing: Normally, we offer an actionlib interface. But tool slike rviz
+    // want to send simple PoseStamped messages over a topic to send goals, because they don't
+    // care about progress and the ability to cancel (wtf?). So, we offer the move_base_simple
+    // topic to receive those messages. In the callback receiving those messages, we simply
+    // reformat those PoseStamped messages to be ActionGoals and send them to ourself as goals.
+    //ros::NodeHandle nodeHandleSimpleMove("/move_base_simple");
+    ros::NodeHandle nodeHandleSimpleMove("/bowens");
+    //nodeHandleSimpleMove.subscribe<geometry_msgs::PoseStamped>("goal", 1, boost::bind(&MoveBaseAction::simplePoseCallBack, this, _1));
+    nodeHandleSimpleMove.subscribe("bensogoal", 1, &MoveBaseAction::simplePoseCallBack, this);
+    mActionGoalPublisher = nodeHandle.advertise<move_base_msgs::MoveBaseActionGoal>("goal", 1);
+
     ROS_INFO("MoveBaseAction::MoveBaseAction(): started action server.");
 }
 
 MoveBaseAction::~MoveBaseAction(void)
 {
+  // tell MIRA to cancel driving by setting an empty task
+  mMiraAuthority->callService<void>("/robot/navigation/Pilot", "setTask", boost::shared_ptr<mira::navigation::Task>());
+
+  // set the action state to preempted
+  mActionServer->setPreempted();
+
+  mActionServer->shutdown();
   delete mActionServer;
 }
 
+void MoveBaseAction::simplePoseCallBack(const geometry_msgs::PoseStamped::ConstPtr& goal)
+{
+    ROS_INFO("MoveBaseAction::simplePoseCallBack(): wrapping the PoseStamped in an action message and re-sending as goal to the server.");
+    move_base_msgs::MoveBaseActionGoal actionGoal;
+    actionGoal.header.stamp = ros::Time::now();
+    actionGoal.goal.target_pose = *goal;
+    mActionGoalPublisher.publish(actionGoal);
+}
+
   // Called when a new goal is set, simply accepts the goal
-  void MoveBaseAction::goalCB()
+  void MoveBaseAction::actionGoalCallBack()
   {
     ROS_INFO("MoveBaseAction::goalCB(): driving to %2.2f/%2.2f/%2.2f", mGoal.pose.position.x, mGoal.pose.position.y, mira::rad2deg(tf::getYaw(mGoal.pose.orientation)));
+    exit(0);
     // accept the new goal
     mGoal = mActionServer->acceptNewGoal()->target_pose;
 
@@ -80,11 +111,11 @@ MoveBaseAction::~MoveBaseAction(void)
   // a preempt callback is created to ensure that the action responds promptly to a cancel request.
   // The callback function takes no arguments and sets preempted on the action server.
   // I wonder whether this needs to be mutexed.
-  void MoveBaseAction::preemptCB()
+  void MoveBaseAction::preemptCallBack()
   {
     ROS_INFO("%s: Preempted", mActionName.c_str());
 
-    // tell MIRA to cancel driving - is it ok to just set an empty task?
+    // tell MIRA to cancel driving by setting an empty task
     mMiraAuthority->callService<void>("/robot/navigation/Pilot", "setTask", boost::shared_ptr<mira::navigation::Task>());
 
     // set the action state to preempted
@@ -114,7 +145,8 @@ MoveBaseAction::~MoveBaseAction(void)
         mActionServer->setAborted();
     }
   }
-/*
+
+/* old, from tutorial:
   // Takes format of subscribed data, puts relevant data into actionserver's feedback channel
   void MoveBaseAction::analysisCB(const std_msgs::Float32::ConstPtr& msg)
   {
