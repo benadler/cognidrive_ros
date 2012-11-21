@@ -4,15 +4,30 @@
 CogniDriveRos::CogniDriveRos(int argc, char **argv)
 {
     TCLAP::CmdLine cmd("cognidrive_ros connects MetraLab's CogniDrive to ROS.");
-    TCLAP::SwitchArg switchSimulation("s","simulation","Enable simulation mode.", false);
-    // we don't really process the -c parameter using TCLAP, but TCLAP would fail if we specify -c without it knowing the parameter
-    TCLAP::ValueArg<std::string> switchMiraConfiguration("c","config","A MIRA configuration file (*.xml).",false,"","string");
+    // Disable -c for now, so that people have to start MIRA in one process and cognidrive_ros in another.
+    // Currently, the only reason for having both in separate processes is that both link to different
+    // versions of opencv, leading to crashes when setting a driving task in MoveBaseAction.
+    //TCLAP::ValueArg<std::string> switchMiraConfiguration("c","config","A MIRA configuration file (*.xml).",false,"","string");
+    //cmd.add(switchMiraConfiguration);
+
     TCLAP::ValueArg<int> switchMiraPort("p","fw-port","A MIRA network port.",false,1234,"int");
-    cmd.add(switchSimulation);
-    cmd.add(switchMiraConfiguration);
     cmd.add(switchMiraPort);
+
+    TCLAP::ValueArg<int> switchMiraDebug("d","debug-level","The log level from 0=CRITICAL to 5=TRACE",false,2,"int");
+    cmd.add(switchMiraDebug);
+
+    TCLAP::ValueArg<std::string> switchMiraRemoteFramework("k","known-fw","Connect to a remote MIRA framework.",false,"127.0.0.1:1234","string");
+    cmd.add(switchMiraRemoteFramework);
+
+    TCLAP::SwitchArg switchSimulation("s","simulation","Enable simulation mode.", false);
+    cmd.add(switchSimulation);
+
     cmd.parse(argc, argv);
     mSimulation = switchSimulation.getValue();
+
+    // Create and start the mira framework before starting ROS to allow for ordered shutdown.
+    // (both re-set signal handlers.).
+    mMiraFramework = new mira::Framework(argc, argv, true);
 
     // ros init
     ros::init(argc, argv, "cognidrive_ros");
@@ -27,9 +42,6 @@ CogniDriveRos::CogniDriveRos(int argc, char **argv)
     mNumberOfPacketsMira2RosMapMetaData = 0;
     mNumberOfPacketsMira2RosMapOccupancyGrid = 0;
 
-    // Create and start the mira framework
-    // add -c scitos....xml to start cognidrive here - we should specify it in the ROS launchfile
-    mMiraFramework = new mira::Framework(argc, argv, true);
 
     // Create mira authority. This is like ros::NodeHandle
     mMiraAuthority = new mira::Authority("/", "cognidrive_ros");
@@ -109,17 +121,30 @@ CogniDriveRos::CogniDriveRos(int argc, char **argv)
        ROS_INFO("error reading map from channel: %s", e.what());
     }
 
-    // transform things
-    //mMiraAuthority->addTransformLink("child", "parent");
-    //mMiraAuthority->publishTransform("child", mira::Pose2(0.0, 0.0, 0.0), mira::Time::now());
-    //mira::Pose2 t = mMiraAuthority->getTransform<mira::Pose2>("child", "parent", mira::Time::now());
-
     // provide ros-actionlib interface to CogniDrive
     mMoveBaseAction = new MoveBaseAction(mMiraAuthority);
 }
 
 CogniDriveRos::~CogniDriveRos()
 {
+    printf("CogniDriveRos::~CogniDriveRos(): requesting MIRA to terminate...\n");
+    mMiraFramework->requestTermination();
+    printf("CogniDriveRos::~CogniDriveRos(): MIRA terminated successfully.\n");
+
+    printf("CogniDriveRos::~CogniDriveRos(): deleting members.\n");
+
+    if(mSimulation) delete mDummyDrive;
+
+    delete mMoveBaseAction;
+
+    delete mMiraAuthority;
+    delete mMiraFramework;
+
+    delete mRosNodeHandle;
+    delete mRosTransformBroadcaster;
+
+    printf("CogniDriveRos::~CogniDriveRos(): finished.\n");
+    fflush(stdout);
 }
 
 void CogniDriveRos::onMiraLaserScanFront(mira::ChannelRead<mira::robot::RangeScan> data)
@@ -171,7 +196,7 @@ void CogniDriveRos::onMiraOdometry(mira::ChannelRead<mira::robot::Odometry2> dat
     // There is data->sequenceID, but this isn't currently used in MIRA
     odomRos.header.seq = mNumberOfPacketsMira2RosOdometry++;
     odomRos.header.stamp = ros::Time::fromBoost(data.getTimestamp());
-    odomRos.header.frame_id = data.getChannelID();
+    odomRos.header.frame_id = data->frameID;//.getChannelID();
 
     // now publish the laserscan to ROS
     mRosPubOdometry.publish(odomRos);
@@ -210,6 +235,17 @@ void CogniDriveRos::onMiraMap(mira::ChannelRead<mira::maps::OccupancyGrid> data)
     ROS_INFO("CogniDriveRos::onMiraMap(): forwarding a map from MIRA to ROS");
 
     // Fetch map transform from MIRA
+    ROS_INFO("CogniDriveRos::onMiraMap(): waiting for map transform...");
+    const bool transformFound = mMiraAuthority->waitForTransform("/maps/static/MapFrame", "/GlobalFrame", mira::Duration::seconds(10));
+    if(transformFound)
+    {
+      ROS_INFO("CogniDriveRos::onMiraMap(): map transform received, forwarding map.");
+    }
+    else
+    {
+      ROS_ERROR("CogniDriveRos::onMiraMap(): transform not found");
+      return;
+    }
     const mira::Pose2 poseMap = mMiraAuthority->getTransform<mira::Pose2>("/maps/static/MapFrame", "/GlobalFrame", mira::Time::now());
 
     nav_msgs::OccupancyGrid mapOccupancyGridRos;
@@ -245,6 +281,11 @@ void CogniDriveRos::onRosCmdVel(const geometry_msgs::Twist::ConstPtr& msg)
 {
     // We received a ROS cmd_vel (e.g. from playstation controller). Lets make the wheels on the real robot move!
     ROS_INFO("CogniDriveRos::onRosCmdVel(): forwarding ROS cmd_vel message to MIRA::setVelocity()");
+
+    // We can either use the "/robot/Robot"-service directly and make sure the cmd_vel goes directly to the scitos'
+    // wheels, or we can query for service "IDrive". Then, we might find the service exposed by ourselves (DummyDrive)
+    // and cause infinite loops: We receive a cmd_vel from ROS, forward it to MIRA-IDrive which calls our own
+    // DummyDrive, which publishes cmd_vel again. To avoid this, we use "/robot/Robot".
     mMiraAuthority->callService<void>("/robot/Robot", "setVelocity", mira::Velocity2(msg->linear.x, 0.0f, msg->angular.z));
 }
 
@@ -258,7 +299,7 @@ void CogniDriveRos::onRosInitialPose(const geometry_msgs::PoseWithCovarianceStam
     if(!s.empty())
     {
       auto result = mMiraAuthority->callService<void>(s.front(), "setInitPose", pose);
-      result.timedWait(mira::Duration::seconds(10));
+      result.timedWait(mira::Duration::seconds(1));
       result.get(); // causes exception if something went wrong.
     }
 }
@@ -269,19 +310,6 @@ int CogniDriveRos::exec()
     ROS_INFO("CogniDriveRos::exec(): starting event loop...");
     ros::spin();
     ROS_INFO("CogniDriveRos::exec(): quit ROS event loop...");
-
-    ROS_INFO("CogniDriveRos::exec(): requesting MIRA to terminate...");
-    mMiraFramework->requestTermination();
-    ROS_INFO("CogniDriveRos::exec(): MIRA terminated successfully.");
-
-    delete mDummyDrive;
-    delete mMoveBaseAction;
-
-    delete mMiraAuthority;
-    delete mMiraFramework;
-
-    delete mRosNodeHandle;
-    delete mRosTransformBroadcaster;
 
     return 0;
 }

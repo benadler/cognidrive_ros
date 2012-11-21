@@ -39,9 +39,10 @@ protected:
 //   ros::NodeHandle* mRosNodeHandle;
   MoveBaseActionServer* mActionServer;
   ros::Publisher mActionGoalPublisher;
-  std::string mActionName;
   mira::Authority* mMiraAuthority;
   geometry_msgs::PoseStamped mGoal;
+
+  ros::Subscriber mRosSubSimplePose;
 
   // it seems move_base2 has no feedback. I find this to be strange...
   //cognidrive_ros::MoveBaseFeedback mMoveBaseFeedback;

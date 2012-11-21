@@ -3,9 +3,7 @@
 MoveBaseAction::MoveBaseAction(mira::Authority* miraAuthority)
 {
     mMiraAuthority = miraAuthority;
-    mActionName = std::string("move_base");
-
-    ros::NodeHandle nodeHandle(mActionName);
+    ros::NodeHandle nodeHandle("move_base");
     mActionServer = new MoveBaseActionServer(ros::NodeHandle(), "move_base", /*autostart*/false);
 
     //register the goal and feeback callbacks
@@ -17,17 +15,16 @@ MoveBaseAction::MoveBaseAction(mira::Authority* miraAuthority)
 
     // we can subscribe to a ROS topic or MIRA channel of interest for generating feedback
     //mSubscriber = mRosNodeHandle.subscribe("/random_number", 1, &MoveBaseAction::analysisCB, this);
-    mMiraAuthority->subscribe<std::string>("PilotEvent", &MoveBaseAction::onCogniDriveStatus, this);
+    mMiraAuthority->subscribe<std::string>("/navigation/PilotEvent", &MoveBaseAction::onCogniDriveStatus, this);
 
     // This is mildly confusing: Normally, we offer an actionlib interface. But tool slike rviz
     // want to send simple PoseStamped messages over a topic to send goals, because they don't
     // care about progress and the ability to cancel (wtf?). So, we offer the move_base_simple
     // topic to receive those messages. In the callback receiving those messages, we simply
     // reformat those PoseStamped messages to be ActionGoals and send them to ourself as goals.
-    //ros::NodeHandle nodeHandleSimpleMove("/move_base_simple");
-    ros::NodeHandle nodeHandleSimpleMove("/bowens");
+    ros::NodeHandle nodeHandleSimpleMove("/move_base_simple");
     //nodeHandleSimpleMove.subscribe<geometry_msgs::PoseStamped>("goal", 1, boost::bind(&MoveBaseAction::simplePoseCallBack, this, _1));
-    nodeHandleSimpleMove.subscribe("bensogoal", 1, &MoveBaseAction::simplePoseCallBack, this);
+    mRosSubSimplePose = nodeHandleSimpleMove.subscribe("goal", 1, &MoveBaseAction::simplePoseCallBack, this);
     mActionGoalPublisher = nodeHandle.advertise<move_base_msgs::MoveBaseActionGoal>("goal", 1);
 
     ROS_INFO("MoveBaseAction::MoveBaseAction(): started action server.");
@@ -36,7 +33,13 @@ MoveBaseAction::MoveBaseAction(mira::Authority* miraAuthority)
 MoveBaseAction::~MoveBaseAction(void)
 {
   // tell MIRA to cancel driving by setting an empty task
-  mMiraAuthority->callService<void>("/robot/navigation/Pilot", "setTask", boost::shared_ptr<mira::navigation::Task>());
+  auto services = mMiraAuthority->queryServicesForInterface("INavigation");
+  if(!services.empty())
+  {
+    auto result = mMiraAuthority->callService<void>(services.front(), "setTask", boost::shared_ptr<mira::navigation::Task>());
+    result.timedWait(mira::Duration::seconds(1));
+    result.get(); // causes exception if something went wrong.
+  }
 
   // set the action state to preempted
   mActionServer->setPreempted();
@@ -47,20 +50,29 @@ MoveBaseAction::~MoveBaseAction(void)
 
 void MoveBaseAction::simplePoseCallBack(const geometry_msgs::PoseStamped::ConstPtr& goal)
 {
-    ROS_INFO("MoveBaseAction::simplePoseCallBack(): wrapping the PoseStamped in an action message and re-sending as goal to the server.");
     move_base_msgs::MoveBaseActionGoal actionGoal;
     actionGoal.header.stamp = ros::Time::now();
     actionGoal.goal.target_pose = *goal;
+
+    ROS_INFO("MoveBaseAction::simplePoseCallBack(): wrapping the PoseStamped (%2.2f/%2.2f/%2.2f deg) in an action message (%2.2f/%2.2f/%2.2f deg) and re-sending as goal to the server.",
+	     goal->pose.position.x,
+	     goal->pose.position.y,
+	     mira::rad2deg(tf::getYaw(goal->pose.orientation)),
+	     actionGoal.goal.target_pose.pose.position.x,
+	     actionGoal.goal.target_pose.pose.position.y,
+	     mira::rad2deg(tf::getYaw(actionGoal.goal.target_pose.pose.orientation))
+	    );
+
     mActionGoalPublisher.publish(actionGoal);
 }
 
   // Called when a new goal is set, simply accepts the goal
   void MoveBaseAction::actionGoalCallBack()
   {
-    ROS_INFO("MoveBaseAction::goalCB(): driving to %2.2f/%2.2f/%2.2f", mGoal.pose.position.x, mGoal.pose.position.y, mira::rad2deg(tf::getYaw(mGoal.pose.orientation)));
-    exit(0);
-    // accept the new goal
+    // accept the new goal - do I have to cancel a pre-existing one first?
     mGoal = mActionServer->acceptNewGoal()->target_pose;
+
+    ROS_INFO("MoveBaseAction::actionGoalCallBack(): driving to %2.2f/%2.2f/%2.2f", mGoal.pose.position.x, mGoal.pose.position.y, mira::rad2deg(tf::getYaw(mGoal.pose.orientation)));
 
     // actually tell MIRA/cognidrive to move - see http://www.mira-project.org/MIRA-doc/domains/navigation/Pilot/
     boost::shared_ptr<mira::navigation::Task> task(new mira::navigation::Task());
@@ -88,8 +100,8 @@ void MoveBaseAction::simplePoseCallBack(const geometry_msgs::PoseStamped::ConstP
     task->addSubTask(
       mira::navigation::SubTaskPtr(
 	new mira::navigation::OrientationTask(
-	  mira::deg2rad(tf::getYaw(mGoal.pose.orientation)),
-	  mira::deg2rad(2.0f) // tolerance
+	  tf::getYaw(mGoal.pose.orientation),
+	  mira::deg2rad(10.0f) // tolerance
 	)
       )
     );
@@ -104,7 +116,20 @@ void MoveBaseAction::simplePoseCallBack(const geometry_msgs::PoseStamped::ConstP
       )
     );
 
-    mMiraAuthority->callService<void>("/robot/navigation/Pilot", "setTask", task);
+    // Find the service responsible for driving
+    auto services = mMiraAuthority->queryServicesForInterface("INavigation");
+    if(!services.empty())
+    {
+      /*auto result = */mMiraAuthority->callService<void>(services.front(), "setTask", task);
+      ROS_INFO("MoveBaseAction::actionGoalCallBack(): MIRA-task set.");
+//       result.timedWait(mira::Duration::seconds(10));
+//       result.get(); // causes exception if something went wrong.
+      ROS_INFO("MoveBaseAction::actionGoalCallBack(): MIRA-task set successfully.");
+    }
+    else
+    {
+      ROS_ERROR("MoveBaseAction::actionGoalCallBack(): couldn't find MIRA Navigation service, cannot drive.");
+    }
   }
 
   // This action is event driven, the action code only runs when the callbacks occur therefore
@@ -113,10 +138,16 @@ void MoveBaseAction::simplePoseCallBack(const geometry_msgs::PoseStamped::ConstP
   // I wonder whether this needs to be mutexed.
   void MoveBaseAction::preemptCallBack()
   {
-    ROS_INFO("%s: Preempted", mActionName.c_str());
+    ROS_ERROR("MoveBaseAction::preemptCallBack(): preempted.");
 
     // tell MIRA to cancel driving by setting an empty task
-    mMiraAuthority->callService<void>("/robot/navigation/Pilot", "setTask", boost::shared_ptr<mira::navigation::Task>());
+    auto services = mMiraAuthority->queryServicesForInterface("INavigation");
+    if(!services.empty())
+    {
+      auto result = mMiraAuthority->callService<void>(services.front(), "setTask", boost::shared_ptr<mira::navigation::Task>());
+      result.timedWait(mira::Duration::seconds(1));
+      result.get(); // causes exception if something went wrong.
+    }
 
     // set the action state to preempted
     mActionServer->setPreempted();
@@ -131,16 +162,16 @@ void MoveBaseAction::simplePoseCallBack(const geometry_msgs::PoseStamped::ConstP
       return;
 
 
-    if(status.compare("GoalReached") != 0)
+    if(status == "GoalReached")
     {
-        ROS_INFO("%s: Succeeded", mActionName.c_str());
+        ROS_INFO("MoveBaseAction::onCogniDriveStatus(): driving succeeded.");
 
         // set the action state to succeeded - there is no result
         mActionServer->setSucceeded();
     }
-    else if(status.compare("NoPathPlannable") != 0 || status.compare("NoValidMotionCommand") != 0 || status.compare("NoData") != 0)
+    else if(status == "NoPathPlannable" || status == "NoValidMotionCommand" || status == "NoData")
     {
-	ROS_INFO("%s: Aborted, reason: %s", mActionName.c_str(), status.c_str());
+	ROS_INFO("MoveBaseAction::onCogniDriveStatus(): driving aborted, reason: %s", status.c_str());
         // set the action state to aborted
         mActionServer->setAborted();
     }

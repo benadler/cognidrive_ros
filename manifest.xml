@@ -15,7 +15,4 @@
   <depend package="move_base_msgs"/>
   <depend package="actionlib"/>
   <depend package="actionlib_msgs"/>
-
 </package>
-
-
