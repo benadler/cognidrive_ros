@@ -4,6 +4,7 @@
 CogniDriveRos::CogniDriveRos(int argc, char **argv)
 {
     TCLAP::CmdLine cmd("cognidrive_ros connects MetraLab's CogniDrive to ROS.");
+
     // Disable -c for now, so that people have to start MIRA in one process and cognidrive_ros in another.
     // Currently, the only reason for having both in separate processes is that both link to different
     // versions of opencv, leading to crashes when setting a driving task in MoveBaseAction.
