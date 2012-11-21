@@ -19,10 +19,17 @@ Usage
 
 When cognidrive_ros starts (as a ROS node), it also starts a complete MIRA framework, forwarding all command-line arguments. If you pass
 
- * "-c|--config   miraconfig.xml", the contained MIRA framework will start in-process, loading all other MIRA units.
- * "-k|--known-fw host:port", the contained MIRA framework will connect to an already-running MIRA-framework on host:port.
+ * "-c | --config   miraconfig.xml", the contained MIRA framework will start in-process, loading all other MIRA units.
+ * "-k | --known-fw host:port", the contained MIRA framework will connect to an already-running MIRA-framework on host:port.
 
 Right now, the -c argument is disabled, because running MIRA and ROS in the same process leads to crashes. This is because MIRA uses the system's version of opencv (2.3) and ROS uses its own (2.4), but these versions are not binary compatible.
+
+A typical way to use ROS with CogniDrive is:
+
+ * go to directory containing the MIRA configuration file (e.g. PilotDemo.xml), then start "mira -c PilotDemo.xml". In this file, MIRA is instructed to listen on <root> -> <communication> -> <port>, e.g. port 1234.
+ * start cognidrive_ros and pass -k 127.0.0.1:1234, so that the MIRA framework in cognidrive_ros will connect to the instance of MRIA you started above.
+ * start "rosrun rviz rviz" to visualize laserscans and transforms, set pose estimates or 2d nav goals.
+ * start "miracenter" and connect to the running MIRA framework at 127.0.0.1:1234 to see the same things in MIRA.
 
 Support
 =======
