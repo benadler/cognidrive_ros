@@ -37,7 +37,7 @@ mira_require_package(Maps)
 rosbuild_genmsg()
 
 #uncomment if you have defined services
-#rosbuild_gensrv()
+rosbuild_gensrv()
 
 rosbuild_add_executable(cognidrive_ros
   src/cognidriveros.cpp
