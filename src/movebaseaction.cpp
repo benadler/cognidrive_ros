@@ -15,7 +15,7 @@ MoveBaseAction::MoveBaseAction(mira::Authority* miraAuthority)
 
     // we can subscribe to a ROS topic or MIRA channel of interest for generating feedback
     //mSubscriber = mRosNodeHandle.subscribe("/random_number", 1, &MoveBaseAction::analysisCB, this);
-    mMiraAuthority->subscribe<std::string>("/navigation/PilotEvent", &MoveBaseAction::onCogniDriveStatus, this);
+    mMiraAuthority->subscribe<std::string>("/robot/navigation/PilotEvent", &MoveBaseAction::onCogniDriveStatus, this);
 
     // This is mildly confusing: Normally, we offer an actionlib interface. But tool slike rviz
     // want to send simple PoseStamped messages over a topic to send goals, because they don't
