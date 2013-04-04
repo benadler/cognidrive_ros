@@ -15,6 +15,8 @@
 #include <nav_msgs/MapMetaData.h>
 #include <geometry_msgs/PoseWithCovarianceStamped.h>
 
+#include "cognidrive_ros/LoadMap.h" // our service, generated from LoadMap.srv
+
 #include <converter.h>
 #include <dummydrive.h>
 #include <movebaseaction.h>
@@ -44,6 +46,9 @@ private:
     ros::Subscriber mRosSubLaserScan;
     ros::Subscriber mRosSubOdometry;
     ros::Subscriber mRosSubCmdVel;
+    
+    // A service that e.g. peis_ros can call to change the map (forwarded to MIRA)
+    ros::ServiceServer mRosServiceLoadMap;
 
     mira::Framework* mMiraFramework;
 
@@ -65,6 +70,7 @@ private:
     void onMiraBatteryState(mira::ChannelRead<mira::robot::BatteryState> data);
 
     void onMiraMap(mira::ChannelRead<mira::maps::OccupancyGrid> data);
+    bool onRosLoadMap(cognidrive_ros::LoadMap::Request &req, cognidrive_ros::LoadMap::Response &res);
 
     void onRosLaserScan(const sensor_msgs::LaserScan::ConstPtr& msg);
     void onRosOdometry(const nav_msgs::Odometry::ConstPtr& msg);

@@ -49,6 +49,8 @@ CogniDriveRos::CogniDriveRos(int argc, char **argv)
 
     // Whenever we receive an initial pose estimate, we want to send it to MIRA/CogniDrive
     mRosSubInitialPose = mRosNodeHandle->subscribe("initialpose", 1, &CogniDriveRos::onRosInitialPose, this);
+    
+    mRosServiceLoadMap = mRosNodeHandle->advertiseService("LoadMap", &CogniDriveRos::onRosLoadMap, this);
 
     if(mSimulation)
     {
@@ -303,6 +305,39 @@ void CogniDriveRos::onRosInitialPose(const geometry_msgs::PoseWithCovarianceStam
       result.timedWait(mira::Duration::seconds(1));
       result.get(); // causes exception if something went wrong.
     }
+}
+
+bool CogniDriveRos::onRosLoadMap(cognidrive_ros::LoadMap::Request &req, cognidrive_ros::LoadMap::Response &res)
+{
+    ROS_INFO("CogniDriveRos::onRosLoadMap(): request to load map: %s", req.map.c_str());
+    
+    auto services = mMiraAuthority->queryServicesForInterface("IMapLoader");
+    if(!services.empty())
+    {
+        auto result = mMiraAuthority->callService<void>(services.front(), "loadMap", std::string("/maps/static/Map"), std::string(req.map + ".xml"), std::string("/GlobalFrame"));
+        result.timedWait(mira::Duration::seconds(5));
+	try
+	{
+	    result.get(); // causes exception if something went wrong.
+	    res.result = std::string("OK: MIRA loaded map: ") + req.map + std::string(".xml");
+	    ROS_INFO("CogniDriveRos::onRosLoadMap(): successful, sending back response: %s", res.result.c_str());
+	}
+	catch(mira::Exception e)
+	{
+	    res.result = std::string("ERROR, could not load map: \"") + req.map + std::string(".xml\": ") + e.what();
+	    ROS_INFO("CogniDriveRos::onRosLoadMap(): failed, sending back response: %s", res.result.c_str());
+	}
+    }
+    else
+    {
+        res.result = std::string("ERROR, could not find MIRA maploader to load map: ") + req.map + std::string(".xml");
+	ROS_INFO("CogniDriveRos::onRosLoadMap(): failed, sending back response: %s", res.result.c_str());
+    }
+
+    // We always return true, even if the map loading failed, because when returning false,
+    // the caller doesn't even our response.status indicating what the problem is. See
+    // http://www.ros.org/wiki/roscpp/Overview/Services
+    return true;
 }
 
 int CogniDriveRos::exec()

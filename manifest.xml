@@ -2,7 +2,7 @@
   <description brief="cognidrive_ros">
      cognidrive_ros tries to connect MetraLab's CogniDrive to ROS. This is a little tricky because CogniDrive uses its own middleware called MIRA (http://www.mira-project.org/). In effect, we translate between ROS-topics and MIRA-channels, ROS-actionlib and MIRA-Navigation-Tasks etc.
   </description>
-  <author>SCITOS Demo user</author>
+  <author>Ben Adler</author>
   <license>BSD</license>
   <review status="unreviewed" notes=""/>
   <url>http://ros.org/wiki/cognidrive_ros</url>
@@ -15,4 +15,5 @@
   <depend package="move_base_msgs"/>
   <depend package="actionlib"/>
   <depend package="actionlib_msgs"/>
+  <rosdep name="libtclap-dev"/>
 </package>
