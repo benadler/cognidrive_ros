@@ -2,6 +2,7 @@
 #define CONVERTER_H
 
 #include <ros/ros.h>
+#include <std_msgs/Bool.h>
 #include <sensor_msgs/LaserScan.h>
 #include <nav_msgs/Odometry.h>
 #include <pr2_msgs/BatteryState2.h>
@@ -145,9 +146,14 @@ struct Converter
 	mapRos->info.resolution = mapMira.getCellSize(); // meters per cell
 	mapRos->info.width = mapMira.width();
 	mapRos->info.height = mapMira.height();
-	mapRos->info.origin.position.x = /*mapMira.getWorldOffset().x() +*/ poseMap.x(); // check whether the former is included in poseMap
-	mapRos->info.origin.position.y = /*mapMira.getWorldOffset().y() +*/ poseMap.y(); // check whether the former is included in poseMap
+	mapRos->info.origin.position.x = -mapMira.getWorldOffset().x(); // check whether the former is included in poseMap
+	mapRos->info.origin.position.y = -mapMira.getWorldOffset().y(); // check whether the former is included in poseMap
+	//mapRos->info.origin.position.x = /*mapMira.getWorldOffset().x() +*/ poseMap.x(); // check whether the former is included in poseMap
+	//mapRos->info.origin.position.y = /*mapMira.getWorldOffset().y() +*/ poseMap.y(); // check whether the former is included in poseMap
 	mapRos->info.origin.position.z = 0.0f;
+
+	//printf("Pose map %f %f\n", poseMap.x(), poseMap.y());
+	//printf("offset %f %f\n", mapMira.getWorldOffset().x(), mapMira.getWorldOffset().y());
 
 	// create quaternion from MIRA's poseMap.phi()
 	mapRos->info.origin.orientation = tf::createQuaternionMsgFromYaw(poseMap.phi());
@@ -162,13 +168,31 @@ struct Converter
 	// It turns out that int8 -1 = uint8 255, so we can just copy the data.
 	//memcpy(&mapRos->data.at(0), mapMira.data(), numberOfCells);
 
+        
 	// cold be parallelized, but is called just once per session
+	int threshold = 35;	
+
 	for(unsigned int i=0;i<numberOfCells;i++)
 	{
-	  if(mapMira.data()[i] == 255)
+	  /*
+	  if(mapMira.data()[i] == 127)
 	    mapRos->data[i] = -1;
 	  else
-	    mapRos->data[i] = mapMira.data()[i] / 254;
+	  {
+		float tmp = ((float)mapMira.data()[i] / 254.0f) * 100.0f;
+	    mapRos->data[i] = (int8)tmp;
+	  }
+		*/
+          
+          
+          // ROS manages only 3 values: 0 free; 100 occupied; -1 unknown
+	  // Then, a threshold is used to have only 0 and 100 
+	  if(mapMira.data()[i] < threshold)
+	    mapRos->data[i] = 0;
+
+	  if(mapMira.data()[i] >= threshold)
+	    mapRos->data[i] = 100;
+ 	  
 	}
     }
 

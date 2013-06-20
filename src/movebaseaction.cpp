@@ -15,6 +15,7 @@ MoveBaseAction::MoveBaseAction(mira::Authority* miraAuthority)
 
     // we can subscribe to a ROS topic or MIRA channel of interest for generating feedback
     //mSubscriber = mRosNodeHandle.subscribe("/random_number", 1, &MoveBaseAction::analysisCB, this);
+    //mMiraAuthority->subscribe<std::string>("/navigation/PilotEvent", &MoveBaseAction::onCogniDriveStatus, this);
     mMiraAuthority->subscribe<std::string>("/robot/navigation/PilotEvent", &MoveBaseAction::onCogniDriveStatus, this);
 
     // This is mildly confusing: Normally, we offer an actionlib interface. But tool slike rviz
@@ -90,8 +91,8 @@ void MoveBaseAction::simplePoseCallBack(const geometry_msgs::PoseStamped::ConstP
 	    mGoal.pose.position.x,
 	    mGoal.pose.position.y
 	  ),
-	  0.1f, // minimum tolerance??
-	  0.2f  // maximum tolerance??
+	  0.4f, //0.1f, // minimum tolerance??
+	  0.5f //0.2f  // maximum tolerance??
 	)
       )
     );
@@ -158,8 +159,10 @@ void MoveBaseAction::simplePoseCallBack(const geometry_msgs::PoseStamped::ConstP
     std::string status = data->value();
     ROS_INFO("MoveBaseAction::onCogniDriveStatus(): status changed to %s.", status.c_str());
     // make sure that the action hasn't been canceled
-    if (!mActionServer->isActive())
-      return;
+    if (!mActionServer->isActive()){
+     	 ROS_INFO("MoveBaseAction::onCogniDriveStatus(): Action canceled.");
+	 return;
+    }
 
 
     if(status == "GoalReached")

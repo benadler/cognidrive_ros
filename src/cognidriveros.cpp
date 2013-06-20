@@ -3,7 +3,10 @@
 
 CogniDriveRos::CogniDriveRos(int argc, char **argv)
 {
+    printf("Starting:"); for(int i=0;i<argc;i++) printf(" %s", argv[i]); printf("\n");fflush(stdout);
+
     TCLAP::CmdLine cmd("cognidrive_ros connects MetraLab's CogniDrive to ROS.");
+    cmd.setExceptionHandling(true);
 
     // Disable -c for now, so that people have to start MIRA in one process and cognidrive_ros in another.
     // Currently, the only reason for having both in separate processes is that both link to different
@@ -26,9 +29,28 @@ CogniDriveRos::CogniDriveRos(int argc, char **argv)
     cmd.parse(argc, argv);
     mSimulation = switchSimulation.getValue();
 
-    // Create and start the mira framework before starting ROS to allow for ordered shutdown.
-    // (both re-set signal handlers.).
-    mMiraFramework = new mira::Framework(argc, argv, true);
+    // Create and start the mira framework before starting ROS to allow for ordered shutdown (both re-set signal handlers).
+    // When cognidrive_ros is started using roslaunch, additional parameters are added by roslaunch,
+    // e.g. "__name:=cognidrive_ros" and others. When we pass all these arguments to MIRA, it will
+    // get confused. So, only pass arguments defined above for TCLAP. This is an ugly hack.
+    int miraArgc = 1;
+    char* miraArgv[128];
+    miraArgv[0] = argv[0]; // copy program name
+    
+    for(int i=1;i<argc;i++)
+    {
+        const std::string arg = argv[i];
+        //printf("current flag is %s\n", arg.c_str());
+	if(arg == "-p" || arg == "-d" || arg == "-k" || arg == "--fw-port" || arg == "--debug-level" || arg == "--known-fw")
+	{
+	    //printf("writing param %s into miraArgv[%d] and miraArgv[%d]\n", arg.c_str(), i, i+1);
+	    miraArgv[miraArgc++] = argv[i];
+	    miraArgv[miraArgc++] = argv[i+1];
+	}
+    }
+
+    printf("Starting MIRA using sanitized arguments:"); for(int i=0;i<miraArgc;i++) printf(" %s", miraArgv[i]); printf("\n");fflush(stdout);
+    mMiraFramework = new mira::Framework(miraArgc, miraArgv, true);
 
     // ros init
     ros::init(argc, argv, "cognidrive_ros");
@@ -51,6 +73,16 @@ CogniDriveRos::CogniDriveRos(int argc, char **argv)
     mRosSubInitialPose = mRosNodeHandle->subscribe("initialpose", 1, &CogniDriveRos::onRosInitialPose, this);
     
     mRosServiceLoadMap = mRosNodeHandle->advertiseService("LoadMap", &CogniDriveRos::onRosLoadMap, this);
+    
+    mRosServiceGetInRoller = mRosNodeHandle->advertiseService("GetInRoller", &CogniDriveRos::onGetInRoller, this);
+    
+    mRosServiceGetOutRoller = mRosNodeHandle->advertiseService("GetOutRoller", &CogniDriveRos::onGetOutRoller, this);
+
+    mRosServiceStopMotorRoller = mRosNodeHandle->advertiseService("StopMotorRoller", &CogniDriveRos::onStopMotorRoller, this);
+
+    mRosServiceDockOn = mRosNodeHandle->advertiseService("DockOn", &CogniDriveRos::onDockOn, this);
+
+    mRosServiceDockOff = mRosNodeHandle->advertiseService("DockOff", &CogniDriveRos::onDockOff, this);
 
     if(mSimulation)
     {
@@ -58,12 +90,12 @@ CogniDriveRos::CogniDriveRos(int argc, char **argv)
       ROS_INFO(" -> ignoring MIRA rangescans, odometry and battery to prevent loops");
       ROS_INFO(" -> forwarding ROS laserscans and odometry to cognidrive.");
       ROS_INFO(" -> forwarding cognidrive's drive-command to ROS/cmd_vel topic.");
-
+		
       // In simulation, whenever we receive laserscans from ROS (gazebo), we want to send it to MIRA/CogniDrive
-      mRosSubLaserScan = mRosNodeHandle->subscribe("/base_scan", 10, &CogniDriveRos::onRosLaserScan, this);
+      mRosSubLaserScan = mRosNodeHandle->subscribe("base_scan", 10, &CogniDriveRos::onRosLaserScan, this);
 
       // In simulation, whenever we receive odometry from ROS (gazebo), we want to send it to MIRA/CogniDrive
-      mRosSubOdometry = mRosNodeHandle->subscribe("/base_odometry/odom", 100, &CogniDriveRos::onRosOdometry, this);
+      mRosSubOdometry = mRosNodeHandle->subscribe("base_odometry/odom", 100, &CogniDriveRos::onRosOdometry, this);
 
       // The names of the channels need to match those defined in the robot configuration file (e.g. PilotDemo.xml).
       // create a MIRA channel to publish rangescans coming from ROS/gazebo (in simulation)
@@ -89,15 +121,28 @@ CogniDriveRos::CogniDriveRos(int argc, char **argv)
 
       // this is the odometry as we know it. We could also publish /base_odometry/odometry
       // (total distance/angle travelled) and /base_odometry/odomstate (errors and expected slip)
-      mRosPubOdometry = mRosNodeHandle->advertise<nav_msgs::Odometry>("/base_odometry/odom", 50);
+      mRosPubOdometry = mRosNodeHandle->advertise<nav_msgs::Odometry>("base_odometry/odom", 50);
+
+      // emergency button and bumper pressed flag
+      mRosEmergency = mRosNodeHandle->advertise<std_msgs::Bool>("emergency_switch", 1);
+      mRosBumper = mRosNodeHandle->advertise<std_msgs::Bool>("bumper_contact", 1);
 
       // the ROS BatteryServer2 messages are a bit overkill for MIRA's BatteryState, as the PR2
       // manages around 48 batteries, while MIRA abstracts Scitos' 2 batteries into a single one.
       mRosPubBatteryState = mRosNodeHandle->advertise<pr2_msgs::BatteryServer2>("/battery/server2", 1);
 
+      //status of roller in condominium robot
+      mRosPubRollerStatus = mRosNodeHandle->advertise<std_msgs::String>("/roller_status", 10);
+
       // In application, whenever we receive CmdVel/Twists from ROS, we want to send it to the robots real motors.
-      // In simulation, we don't listen, because the differential-drive node in ROS does the wheel-moving in gazebo
-      mRosSubCmdVel = mRosNodeHandle->subscribe("/cmd_vel", 100, &CogniDriveRos::onRosCmdVel, this);
+      // In simulation, we don't listen, because the differential-drive node in ROS does the wheel-moving in gazebo  
+  	  mRosSubCmdVel = mRosNodeHandle->subscribe("cmd_vel", 100, &CogniDriveRos::onRosCmdVel, this);
+
+	  // Subscribe to topic for resetting the motor stop flag
+      mRosSubResEmergencyStop = mRosNodeHandle->subscribe("reset_emergency_stop", 100, &CogniDriveRos::onResetEmergencyStop, this);
+
+	  // Subscribe to topic for requesting an emergency stop
+      mRosSubEmergencyStop = mRosNodeHandle->subscribe("request_emergency_stop", 100, &CogniDriveRos::onRequestEmergencyStop, this);
 
       // subscribe to MIRA laserscans and forward them to ROS (in real application)
       mMiraAuthority->subscribe<mira::robot::RangeScan>("/robot/FrontLaser/Laser", &CogniDriveRos::onMiraLaserScanFront, this);
@@ -106,8 +151,15 @@ CogniDriveRos::CogniDriveRos(int argc, char **argv)
       // subscribe to MIRA odometry and forward it to ROS (in real application)
       mMiraAuthority->subscribe<mira::robot::Odometry2>("/robot/Odometry", &CogniDriveRos::onMiraOdometry, this);
 
+      // subscribe to MIRA motor status and forward it to ROS (in real application)
+      mMiraAuthority->subscribe<uint8>("/robot/MotorStatus", &CogniDriveRos::onMiraMotorStatus, this);
+
       // subscribe to MIRA batterystate and forward it to ROS (in real application)
       mMiraAuthority->subscribe<mira::robot::BatteryState>("/robot/charger/Battery", &CogniDriveRos::onMiraBatteryState, this);
+
+      // subscribe to MIRA roller status and forward it to ROS
+      mMiraAuthority->subscribe<std::string>("/binboard/MotorStatus", &CogniDriveRos::onMiraRollerStatus, this);
+
     }
 
     // publish MIRA/cognidrive maps to ROS in both simulation and application
@@ -214,6 +266,22 @@ void CogniDriveRos::onMiraOdometry(mira::ChannelRead<mira::robot::Odometry2> dat
     mRosTransformBroadcaster->sendTransform(tf::StampedTransform(miraPoseToRosTransform(&p), ros::Time::fromBoost((data.getTimestamp())), "map", "base_link"));
 }
 
+void CogniDriveRos::onMiraMotorStatus(mira::ChannelRead<uint8> data)
+{
+    std_msgs::Bool emergencyRos;
+	// A bool has no timestamp :(     
+	//emergencyRos.header.stamp = ros::Time::fromBoost(data.getTimestamp());
+    //emergencyRos.header.frame_id = data->frameID;
+    emergencyRos.data = *data & 0x08;
+    mRosEmergency.publish(emergencyRos);
+    std_msgs::Bool bumperRos;
+	// A bool has no timestamp :(    
+	//bumperRos.header.stamp = ros::Time::fromBoost(data.getTimestamp());
+    //bumperRos.header.frame_id = data->frameID;
+    bumperRos.data = *data & 0x02;
+    mRosBumper.publish(bumperRos);
+}
+
 void CogniDriveRos::onMiraBatteryState(mira::ChannelRead<mira::robot::BatteryState> data)
 {
 
@@ -233,13 +301,23 @@ void CogniDriveRos::onMiraBatteryState(mira::ChannelRead<mira::robot::BatterySta
     mRosPubBatteryState.publish(batteryRos);
 }
 
+void CogniDriveRos::onMiraRollerStatus(mira::ChannelRead<std::string> data)
+{
+    //cognidrive_ros::RollerStatus rollerStatusRos;
+    //rollerStatusRos.header.stamp = ros::Time::now();
+    
+    std_msgs::String rollerStatusRos;
+    rollerStatusRos.data = *data;
+    mRosPubRollerStatus.publish(rollerStatusRos);
+}
+
 void CogniDriveRos::onMiraMap(mira::ChannelRead<mira::maps::OccupancyGrid> data)
 {
     ROS_INFO("CogniDriveRos::onMiraMap(): forwarding a map from MIRA to ROS");
 
     // Fetch map transform from MIRA
     ROS_INFO("CogniDriveRos::onMiraMap(): waiting for map transform...");
-    const bool transformFound = mMiraAuthority->waitForTransform("/maps/static/MapFrame", "/GlobalFrame", mira::Duration::seconds(10));
+    const bool transformFound = mMiraAuthority->waitForTransform("/maps/MapFrame", "/GlobalFrame", mira::Duration::seconds(10));
     if(transformFound)
     {
       ROS_INFO("CogniDriveRos::onMiraMap(): map transform received, forwarding map.");
@@ -249,7 +327,7 @@ void CogniDriveRos::onMiraMap(mira::ChannelRead<mira::maps::OccupancyGrid> data)
       ROS_ERROR("CogniDriveRos::onMiraMap(): transform not found");
       return;
     }
-    const mira::Pose2 poseMap = mMiraAuthority->getTransform<mira::Pose2>("/maps/static/MapFrame", "/GlobalFrame", mira::Time::now());
+    const mira::Pose2 poseMap = mMiraAuthority->getTransform<mira::Pose2>("/maps/MapFrame", "/GlobalFrame", mira::Time::now());
 
     nav_msgs::OccupancyGrid mapOccupancyGridRos;
     Converter::mira2ros(*data, &mapOccupancyGridRos, poseMap);
@@ -290,6 +368,20 @@ void CogniDriveRos::onRosCmdVel(const geometry_msgs::Twist::ConstPtr& msg)
     // and cause infinite loops: We receive a cmd_vel from ROS, forward it to MIRA-IDrive which calls our own
     // DummyDrive, which publishes cmd_vel again. To avoid this, we use "/robot/Robot".
     mMiraAuthority->callService<void>("/robot/Robot", "setVelocity", mira::Velocity2(msg->linear.x, 0.0f, msg->angular.z));
+}
+
+void CogniDriveRos::onResetEmergencyStop(const std_msgs::Bool::ConstPtr& msg)
+{
+    ROS_INFO("CogniDriveRos::onResetEmergencyStop(): forwarding ROS reset_emergeny_stop message to MIRA::resetMotorStop()");
+	if (msg->data) 
+		mMiraAuthority->callService<void>("/robot/Robot", "resetMotorStop");
+}
+
+void CogniDriveRos::onRequestEmergencyStop(const std_msgs::Bool::ConstPtr& msg)
+{
+    ROS_INFO("CogniDriveRos::onRequestEmergencyStop(): forwarding ROS request_emergency_stop message to MIRA::emergencyStop()");
+	if (msg->data)    
+		mMiraAuthority->callService<void>("/robot/Robot", "emergencyStop");
 }
 
 void CogniDriveRos::onRosInitialPose(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg)
@@ -339,6 +431,49 @@ bool CogniDriveRos::onRosLoadMap(cognidrive_ros::LoadMap::Request &req, cognidri
     // http://www.ros.org/wiki/roscpp/Overview/Services
     return true;
 }
+
+//managing roller for good exchange
+bool CogniDriveRos::onGetInRoller(cognidrive_ros::GetInRoller::Request &req, cognidrive_ros::GetInRoller::Response &res)
+{
+    ROS_INFO("CogniDriveRos::onGetInRoller: request to move roller in");
+	res.result = std::string("ok");
+	mMiraAuthority->callService<void>("/binboard/head_bin_board", "getIn").get();
+    return true;
+}
+
+bool CogniDriveRos::onGetOutRoller(cognidrive_ros::GetOutRoller::Request &req, cognidrive_ros::GetOutRoller::Response &res)
+{
+    ROS_INFO("CogniDriveRos::onGetOutRoller: request to move roller out");
+        res.result = std::string("ok");
+        mMiraAuthority->callService<void>("/binboard/head_bin_board", "getOut").get();
+    return true;
+}
+
+bool CogniDriveRos::onStopMotorRoller(cognidrive_ros::StopMotorRoller::Request &req, cognidrive_ros::StopMotorRoller::Response &res)
+{   
+     
+    ROS_INFO("CogniDriveRos::onStopMotortRoller: request to stop roller");
+        res.result = std::string("ok");
+        mMiraAuthority->callService<void>("/binboard/head_bin_board", "stopMotor").get();
+    return true; 
+}
+
+bool CogniDriveRos::onDockOn(cognidrive_ros::DockOn::Request &req, cognidrive_ros::DockOn::Response &res)
+{
+    ROS_INFO("CogniDriveRos::onDockOn: request to dock on station #%d", req.ID_station);
+            res.result = std::string("ok");
+	    mMiraAuthority->callService<void>("/robot/docking/DockingProcess", "dockOn", req.ID_station).get();
+    return true;
+}
+
+bool CogniDriveRos::onDockOff(cognidrive_ros::DockOff::Request &req, cognidrive_ros::DockOff::Response &res)
+{
+    ROS_INFO("CogniDriveRos::onDockOff: request to dock off station #%d", req.ID_station);
+        res.result = std::string("ok");
+	mMiraAuthority->callService<void>("/robot/docking/DockingProcess", "dockOff", req.ID_station).get();
+    return true;
+}
+
 
 int CogniDriveRos::exec()
 {
